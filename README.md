@@ -1,4 +1,4 @@
-# reusable-workflows
+# reusable-github-configuration
 
 Reusable GitHub Actions workflows and composite actions for use across Retrams-AS repositories.
 
