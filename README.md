@@ -28,7 +28,7 @@ Installs uv, sets up Python, and runs `uv sync`.
 
 ```yaml
 steps:
-  - uses: actions/checkout@v4
+  - uses: actions/checkout@v6
   - uses: Retrams-AS/reusable-workflows/.github/actions/setup-uv@main
     with:
       python-version: "3.12" # optional, defaults to 3.10
