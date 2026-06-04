@@ -7,8 +7,6 @@ on:
         description: Python version to use
         type: string
         default: "3.10"
-  push:
-  pull_request:
 
 jobs:
   ruff:
