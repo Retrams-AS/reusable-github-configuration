@@ -12,7 +12,7 @@ Runs `ruff check` and `ruff format --check` using [uv](https://github.com/astral
 
 ```yaml
 jobs:
-  lint:
+  lint-and-format:
     uses: Retrams-AS/reusable-workflows/.github/workflows/lint-python.yml@main
     with:
       python-version: "3.12" # optional, defaults to 3.10
