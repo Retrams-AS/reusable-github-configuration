@@ -30,7 +30,8 @@ Runs `ruff check` and `ruff format --check` using [uv](https://github.com/astral
 ```yaml
 jobs:
   lint-and-format:
-    uses: Retrams-AS/reusable-github-configuration/.github/workflows/lint-and-format-python.yml@<commit-sha> # <version>
+    # Pin to a released commit SHA. See "Releasing" for how to find the latest.
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/lint-and-format-python.yml@<commit-sha> # <calver>
     with:
       python-version: "3.12" # optional, defaults to "3.10"
 ```
