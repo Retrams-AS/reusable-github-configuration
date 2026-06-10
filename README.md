@@ -3,11 +3,11 @@
 Shared GitHub Actions workflows and composite actions for Retrams-AS repositories —
 maintained here once and reused everywhere else.
 
-**Always pin to a released commit SHA, never `@main`.**
+> **Pinning:** the snippets below use `@main` for brevity. In repos checked by
+> zizmor (`unpinned-uses` blanket policy), pin `uses:` references to a commit
+> SHA with a comment, e.g. `...@<sha> # main 2026-06`, and bump deliberately.
 
-```yaml
-uses: Retrams-AS/reusable-github-configuration/.github/actions/setup-uv@<commit-sha> # <version>
-```
+## Reusable Workflows
 
 ### Lint Python (`lint-and-format-python.yml`)
 See [Releasing](#releasing) for how to find a SHA.
