@@ -47,11 +47,18 @@ jobs:
         id: sha
         run: echo "sha7=$(echo "$GITHUB_SHA" | cut -c1-7)" >> "$GITHUB_OUTPUT"
 
-      - name: DOCR login
+      # Same steps as the docr-login composite action, inlined: zizmor's
+      # unpinned-uses policy requires hash pins, and a same-repo self-reference
+      # can't be pinned to a commit that contains it before it merges.
+      - name: Install doctl
         if: inputs.push
-        uses: Retrams-AS/reusable-github-configuration/.github/actions/docr-login@main
+        uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2.5.2
         with:
           token: ${{ secrets.DO_ACCESS_KEY }}
+
+      - name: Log in to DO registry (short-lived credentials)
+        if: inputs.push
+        run: doctl registry login --expiry-seconds 1200
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
