@@ -1,0 +1,28 @@
+name: DOCR login
+description: >-
+  Org-standard DigitalOcean Container Registry auth: installs doctl and logs
+  in with short-lived registry credentials. Use this instead of
+  docker/login-action with a raw API token — that stores the long-lived token
+  in the runner's docker config, while doctl issues credentials that expire.
+
+inputs:
+  token:
+    description: DigitalOcean API token with registry scope (org secret DO_ACCESS_KEY)
+    required: true
+  expiry-seconds:
+    description: Lifetime of the generated registry credentials
+    default: "1200"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install doctl
+      uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2.5.2
+      with:
+        token: ${{ inputs.token }}
+
+    - name: Log in to DO registry (short-lived credentials)
+      shell: bash
+      env:
+        EXPIRY_SECONDS: ${{ inputs.expiry-seconds }}
+      run: doctl registry login --expiry-seconds "$EXPIRY_SECONDS"

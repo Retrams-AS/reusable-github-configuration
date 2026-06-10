@@ -9,6 +9,7 @@ maintained here once and reused everywhere else.
 uses: Retrams-AS/reusable-github-configuration/.github/actions/setup-uv@<commit-sha> # <version>
 ```
 
+### Lint Python (`lint-and-format-python.yml`)
 See [Releasing](#releasing) for how to find a SHA.
 
 ## What's here
@@ -34,6 +35,27 @@ jobs:
       python-version: "3.12" # optional, defaults to "3.10"
 ```
 
+### Build and push image to DOCR (`build-and-push-docr.yml`)
+
+Builds the caller's Dockerfile and (optionally) pushes it to the DigitalOcean
+Container Registry tagged with the 7-char commit sha. Callers own the triggers
+and path filters; with `push: false` it is a build-only PR check. Pair with a
+release flow that promotes sha artifacts to immutable version tags by retagging
+(reference implementation: `fot_server`).
+
+**Usage in another repository:**
+
+```yaml
+jobs:
+  build:
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/build-and-push-docr.yml@main
+    with:
+      image: registry.digitalocean.com/the-retrams-registry/<service>
+      push: ${{ github.event_name != 'pull_request' }}
+    secrets:
+      DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
+```
+
 ### Zizmor (`zizmor.yml`)
 
 Statically analyses GitHub Actions workflows for security problems with Zizmor.
@@ -51,6 +73,25 @@ releases read their version straight from PR titles (see [Releasing](#releasing)
 Like Zizmor, keep one copy and require it org-wide via a Ruleset.
 
 ## Composite actions
+
+### `docr-login`
+
+The org-standard way to authenticate CI to the DigitalOcean Container Registry:
+installs doctl and runs `doctl registry login --expiry-seconds`, which issues
+**short-lived** registry credentials. Do **not** use `docker/login-action` with
+the raw API token — it stores the long-lived token in the runner's docker
+config for the whole job. (`digitalocean/action-doctl` is actively maintained,
+not deprecated, and this is the auth flow DigitalOcean's own docs use.)
+
+**Usage in another repository:**
+
+```yaml
+steps:
+  - uses: Retrams-AS/reusable-github-configuration/.github/actions/docr-login@main
+    with:
+      token: ${{ secrets.DO_ACCESS_KEY }}
+      expiry-seconds: "1200" # optional, defaults to 1200
+```
 
 ### `setup-uv`
 
