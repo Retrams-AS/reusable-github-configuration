@@ -21,11 +21,13 @@ jobs:
       - name: Checkout shared actions at the called ref
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          # The reusable workflow file's repo + commit SHA at the ref the caller
-          # pinned. github.action_* is not populated for reusable workflows (it
-          # describes the action a step runs), so it cannot resolve this.
-          repository: Retrams-AS/reusable-github-configuration
-          ref: ${{ github.job_workflow_sha }}
+          # The `job` context resolves the repo + commit SHA of the workflow file
+          # that defines this job — i.e. this reusable workflow at the SHA the
+          # caller pinned — so the composite action matches the workflow version.
+          # (Not available on GitHub Enterprise Server.)
+          # https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#job-context
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
           path: ._shared
           persist-credentials: false
 
