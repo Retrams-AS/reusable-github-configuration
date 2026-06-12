@@ -1,106 +1,102 @@
 # reusable-github-configuration
 
-Reusable GitHub Actions workflows and composite actions for use across Retrams-AS repositories.
+Shared GitHub Actions workflows and composite actions for Retrams-AS repositories —
+maintained here once and reused everywhere else.
 
-## Reusable Workflows
+**Always pin to a released commit SHA, never `@main`.**
 
-### Lint Python (`lint-python.yml`)
+```yaml
+uses: Retrams-AS/reusable-github-configuration/.github/actions/setup-uv@<commit-sha> # <version>
+```
+
+See [Releasing](#releasing) for how to find a SHA.
+
+## What's here
+
+| File                                           | What it does                                                                |
+| ---------------------------------------------- | --------------------------------------------------------------------------- |
+| `.github/workflows/lint-and-format-python.yml` | Reusable workflow — runs `ruff check` and `ruff format --check` via uv      |
+| `.github/workflows/zizmor.yml`                 | Reusable workflow — scans your Actions YAML for security issues with Zizmor |
+| `.github/workflows/pr-title-check.yml`         | Reusable workflow — checks each PR title is a valid Conventional Commit     |
+| `.github/actions/setup-uv`                     | Composite action — installs uv, sets up Python, runs `uv sync`              |
+
+## Reusable workflows
+
+### Lint and format (`lint-and-format-python.yml`)
 
 Runs `ruff check` and `ruff format --check` using [uv](https://github.com/astral-sh/uv).
-
-**Usage in another repository:**
 
 ```yaml
 jobs:
   lint-and-format:
-    # Pin to a released commit SHA. See "Releasing" for how to find the latest.
     uses: Retrams-AS/reusable-github-configuration/.github/workflows/lint-and-format-python.yml@<commit-sha> # <version>
     with:
-      python-version: "3.12" # optional, defaults to 3.10
+      python-version: "3.12" # optional, defaults to "3.10"
 ```
 
-### Zizmor
+### Zizmor (`zizmor.yml`)
 
-Runs Zizmor for GitHub Actions security analysis. Get feedback on your workflow yaml's.
+Statically analyses GitHub Actions workflows for security problems with Zizmor.
 
-This is not something to use and maintain everywhere, this is just a workflow with a
-Zizmor action.
+Don't copy this workflow into every repo. It is enforced org-wide. One copy to maintain; Rulesets govern the rest.
 
-This is for making an org Ruleset and check "Require workflows to pass before merging"
-with link to this workflow. Maintain in one repo, and govern through Rulesets.
+**If we upgrade to GitHub Advanced Security, we need to update and extend the workflow to upload results to security overview.**
 
-If GitHub Advanced Security, then update workflow to get results in Security overview.
+### PR title check (`pr-title-check.yml`)
 
-## Composite Actions
+Fails any PR whose title isn't a valid
+[Conventional Commit](https://www.conventionalcommits.org/en/v1.0.0/) — this is what lets
+releases read their version straight from PR titles (see [Releasing](#releasing)).
+
+Like Zizmor, keep one copy and require it org-wide via a Ruleset.
+
+## Composite actions
 
 ### `setup-uv`
 
 Installs uv, sets up Python, and runs `uv sync`.
 
-**Usage in another repository:**
-
 ```yaml
 steps:
   - uses: actions/checkout@v6
-  # Pin to a released commit SHA. See "Releasing" for how to find the latest.
   - uses: Retrams-AS/reusable-github-configuration/.github/actions/setup-uv@<commit-sha> # <version>
     with:
-      python-version: "3.12" # optional, defaults to 3.10
+      python-version: "3.12" # optional, defaults to "3.10"
 ```
 
 ## Releasing
 
-Consumers should pin to a released commit SHA, not `@main`. Cutting a release tags
-the current `main` so there is a stable, immutable hash to pin against.
+### Versioning is derived from PR titles
 
-### Versioning
+You never pick the bump — it's read from the
+[Conventional Commit](https://www.conventionalcommits.org/en/v1.0.0/) type of the PRs merged since the last release:
 
-This repo is an internal **library** (reusable workflows + a composite action with a
-compatibility contract), so it uses **SemVer**: `vMAJOR.MINOR.PATCH` (for example
-`v0.1.0`, `v0.1.1`, `v1.0.0`). Deployable images elsewhere in the org use CalVer; see
-the `digital_ocean_deployment` design notes for that distinction.
+| PR title type                          | Bump      | Meaning                                                        |
+| -------------------------------------- | --------- | -------------------------------------------------------------- |
+| `feat!:` / `fix!:` (any type with `!`) | **major** | Breaking change — a renamed, removed, or newly required input. |
+| `feat:`                                | **minor** | Backwards-compatible change, e.g. a new optional input.        |
+| `fix:` / `perf:`                       | **patch** | Bug or behaviour fix, no input changes.                        |
+| `docs:` / `chore:` / `ci:` / …         | none      | Not releasable on its own.                                     |
 
-Pick the bump by asking *"if a consumer moved their pinned SHA to this release, would
-they have to change their `with:` block?"*
-
-- **patch** — bug/behaviour fix, no input changes.
-- **minor** — backwards-compatible change (e.g. a new optional input).
-- **major** — breaking change (a renamed/removed/required input).
-
-The tag is a human-readable marker; what consumers actually receive is the commit SHA
-they pin, so the version is an informational signal rather than an enforced range.
+Highest type across the PRs wins; `pr-title-check` enforces the format.
 
 ### Cut a release
 
-Releases are created manually — nothing is tagged automatically on merge.
+**Actions → Release (SemVer) → Run workflow** on `main` — nothing to fill in (or set
+**version_override** for a deliberate version like `v1.0.0`). It tags the commit and
+publishes a **GitHub Release** with an auto-generated changelog; the run summary has the
+tag, SHA, and pin lines.
 
-1. Merge your changes to `main`.
-2. Go to **Actions → Release (SemVer) → Run workflow**, with the branch set to `main`.
-   Choose the **bump** (`patch` / `minor` / `major`) and optionally write a **notes**
-   summary.
-3. The workflow computes the next version from the highest existing tag, creates the
-   tag, and publishes a **GitHub Release** whose notes are an auto-generated changelog
-   of merged PRs since the previous release (your summary, if any, is prepended — and
-   you can refine the notes in the Release UI afterwards). The run **summary** lists
-   the new tag, commit SHA, release URL, and ready-to-paste pin lines.
-
-The workflow refuses to run if:
-
-- it is dispatched from a branch other than `main`, or
-- the current `main` commit is already released (nothing changed since the last
-  release). A previously _failed_ release run can simply be re-run, since it left no
-  tag behind.
+It refuses to run off other branches than `main`, or with no releasable PRs since the last tag (use
+`version_override` to force one). Releases are immutable via GitHub's **Immutable
+releases** setting.
 
 ### Find the hash for a release
 
-Either copy it from the release run's job summary, or resolve any tag to its SHA:
+From the run summary, or resolve any tag:
 
 ```bash
 git ls-remote https://github.com/Retrams-AS/reusable-github-configuration <version>
 ```
 
-Then pin consumers to that SHA with the SemVer tag as a trailing comment:
-
-```yaml
-uses: Retrams-AS/reusable-github-configuration/.github/actions/setup-uv@<commit-sha> # <version>
-```
+Then pin to that SHA, with the tag as a trailing comment: `@<commit-sha> # <version>`.

@@ -1,0 +1,45 @@
+name: PR title follows Conventional Commits
+
+# The release workflow derives the SemVer bump from the Conventional Commit type
+# of each merged PR's title, so the title must be parseable. This check enforces
+# that on every PR. Like zizmor, maintain it here and require it org-wide via a
+# Ruleset ("Require workflows to pass before merging").
+
+on:
+  workflow_call:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+    branches: ["**"]
+
+permissions: {}
+
+jobs:
+  conventional-title:
+    name: Validate PR title
+    runs-on: ubuntu-slim
+    permissions: {}
+
+    steps:
+      - name: Check title against Conventional Commits
+        env:
+          # Read from the event payload, never inlined into the script.
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+
+          types='feat|fix|perf|docs|chore|ci|build|refactor|test|style|revert'
+
+          # type(optional scope)(optional !): subject
+          if printf '%s' "$TITLE" | grep -qiE "^(${types})(\([^)]+\))?!?: .+"; then
+            echo "PR title OK: $TITLE"
+            exit 0
+          fi
+
+          {
+            echo "::error::PR title must follow Conventional Commits: '<type>[scope][!]: <subject>'."
+            echo "Title was: '$TITLE'"
+            echo "Allowed types: ${types//|/, }"
+            echo "Mark a breaking change with '!', e.g. 'feat!: rename input'."
+            echo "Examples: 'feat: add cache input', 'fix(setup-uv): correct default'."
+          } >&2
+          exit 1

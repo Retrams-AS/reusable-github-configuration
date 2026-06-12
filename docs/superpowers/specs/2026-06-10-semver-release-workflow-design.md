@@ -6,6 +6,12 @@ Let consumers pin to a stable, released version of this reusable-config repo ins
 the moving `@main` ref. Releases are cut deliberately, by hand, and produce an
 immutable git tag whose commit SHA consumers pin to.
 
+> **Amended 2026-06-11.** Two parts of the original behaviour below have since changed:
+> the manual `bump` input was replaced by auto-derivation from PR titles (see
+> `2026-06-11-auto-derived-semver-from-pr-titles-design.md`), and the "already released"
+> guard was removed in favour of GitHub's repository-level **Immutable releases** setting.
+> The affected sections are annotated inline.
+
 ## Versioning scheme: SemVer (not CalVer)
 
 This repo is an **internal library** — reusable workflows and a composite action with
@@ -36,6 +42,10 @@ carry a compatibility contract. This workflow therefore uses SemVer.
 - `workflow_dispatch` only. Nothing is released automatically on merge.
 - Inputs: `bump` (choice: `patch`/`minor`/`major`, default `patch`) and `notes`
   (optional free-text summary).
+  - *Amended 2026-06-11:* `bump` was removed; the bump is now derived from PR titles.
+    A `version_override` input (optional) replaces it for the rare deliberate case.
+    `notes` was also removed — the body is the auto-generated changelog, edited in the
+    Release UI if a summary is wanted. A normal release now takes no inputs at all.
 
 ## Behavior
 
@@ -46,8 +56,14 @@ On dispatch the workflow:
    being released (`github.sha`). This blocks re-releasing an unchanged `main` while
    still allowing recovery from a previously failed run (a failed run left no tag, so
    nothing blocks). Non-SemVer tags on the commit are ignored.
+   - *Amended 2026-06-11:* this guard was **removed**. Release immutability is now
+     enforced by GitHub's repository-level Immutable releases setting, and the
+     "unchanged `main`" case is instead caught by step 3 finding no releasable PRs.
 3. **Compute version.** Take the highest existing `vMAJOR.MINOR.PATCH` tag (base
    `v0.0.0` if none) and apply the chosen bump.
+   - *Amended 2026-06-11:* the bump is no longer chosen by hand. It is derived from the
+     Conventional Commit type of the PRs merged since that tag (breaking → major, feat →
+     minor, fix/perf → patch; none → refuse). See the 2026-06-11 spec.
 4. **Create tag.** Create a lightweight tag ref via the GitHub REST API
    (`POST /git/refs`, `refs/tags/<tag>` → `github.sha`). No `git push`, so no
    persisted credentials.
