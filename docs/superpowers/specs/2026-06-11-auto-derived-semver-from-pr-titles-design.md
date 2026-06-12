@@ -31,13 +31,15 @@ the change is freshest.
 
 ## Inputs (`workflow_dispatch`)
 
-- `notes` (optional, unchanged) — free-text summary prepended to the changelog.
 - `version_override` (optional, **new**) — when set, bypasses derivation. Accepts a bump
   level (`patch` / `minor` / `major`) or an explicit `vX.Y.Z`. Used for forcing a major,
   cutting `v1.0.0`, or a one-off version. Empty on the normal path.
 - `bump` — **removed**.
+- `notes` — **removed**. The release body is the auto-generated changelog
+  (`generate-notes`); a maintainer who wants a summary edits the published Release in the
+  UI, so a dispatch input is redundant.
 
-A normal release therefore takes **zero required inputs** — just "Run workflow".
+A normal release therefore takes **zero inputs** — just "Run workflow".
 
 ## Behavior
 
@@ -52,8 +54,9 @@ On dispatch:
      `latest`.
    - Otherwise **derive from PR titles**: list PRs merged since `latest`, classify each
      title's Conventional Commit type, and take the highest-ranked type:
-     - breaking (`!` on the type, or a `BREAKING CHANGE:` / `BREAKING-CHANGE:` footer) →
-       **major**
+     - breaking — the type carries a `!` in the **title** (e.g. `feat!:`, `fix(x)!:`) →
+       **major**. (A `BREAKING CHANGE:` footer lives in the PR body, which is not parsed;
+       breaking changes must therefore mark the title with `!`.)
      - `feat` → **minor**
      - `fix`, `perf` → **patch**
      - other types (`docs`, `chore`, `ci`, `build`, `refactor`, `test`, `style`,
@@ -63,8 +66,8 @@ On dispatch:
 4. **Compute the new version** by applying the bump to `latest`.
 5. **Create the tag** via the REST API (unchanged: `refs/tags/<tag>` → `github.sha`, no
    `git push`, no persisted credentials).
-6. **Publish the release** with the `generate-notes` changelog and the optional `notes`
-   prepend (unchanged).
+6. **Publish the release** with the `generate-notes` changelog as its body (editable in
+   the Release UI afterwards).
 7. **Report** the new tag, commit SHA, release URL, and ready-to-paste pin lines to the
    job summary (unchanged).
 
@@ -85,9 +88,11 @@ On dispatch:
 
 ## Enforcement — PR-title check
 
-- A new workflow on `pull_request` (`opened` / `edited` / `synchronize`) targeting `main`
-  validates the PR **title** against the Conventional Commit grammar using an in-house
-  regex, and fails with a helpful message (allowed types + examples) on mismatch.
+- A new workflow (`.github/workflows/pr-title-check.yml`) on `pull_request`
+  (`opened` / `edited` / `reopened` / `synchronize`) validates the PR **title** against
+  the Conventional Commit grammar using an in-house regex, and fails with a helpful
+  message (allowed types + examples) on mismatch. It also exposes `workflow_call` so it
+  can be required org-wide, like zizmor.
 - In-house regex only — no third-party action to pin, consistent with the repo's
   zizmor-clean posture.
 - **Governance:** add this check to the org Ruleset as required-to-merge (same model as
@@ -111,14 +116,14 @@ On dispatch:
 ## Unchanged
 
 Branch guard, REST-API tag creation (no `git push`, no persisted creds), `generate-notes`
-changelog + `notes` prepend, job-summary pin lines, top-level `permissions: {}` with job
+changelog, job-summary pin lines, top-level `permissions: {}` with job
 `contents: write`, `concurrency` serialization, and env-passed values (no inline template
 injection in run steps).
 
 ## Docs (README)
 
 - "Cut a release": drop the bump step — releasing is "Run workflow" (optionally with
-  `notes` or `version_override`).
+  `version_override`).
 - Add a short **PR-title convention** section for contributors: the allowed types and how
   `feat` / `fix` / `!` map to the version, so they understand the title *is* the version
   signal.
