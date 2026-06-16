@@ -57,6 +57,42 @@ jobs:
       DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
 ```
 
+### Release (CalVer) (`release_calver.yml`)
+
+Mints a CalVer `YYYY-MM.N` version by retagging the existing `<image>:<sha7>`
+artifact (never rebuilds), tagging the commit, and (optionally) cutting a
+GitHub Release. Build-once/promote-many; pair with `promote.yml`.
+
+**Usage in another repository:**
+
+```yaml
+jobs:
+  release:
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/release_calver.yml@<commit-sha> # <version>
+    with:
+      image: registry.digitalocean.com/the-retrams-registry/<service>
+      version: "2026-06.1"
+    secrets:
+      DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
+```
+
+### Promote (`promote.yml`)
+
+Bumps `images.newTag` in one overlay and opens a promotion PR — merging it is
+the deploy (Argo CD syncs). Run once per target: `release_calver` mints a
+version, `promote` deploys it to dev / prod / a clinic, each independently.
+
+**Usage in another repository:**
+
+```yaml
+jobs:
+  promote:
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/promote.yml@<commit-sha> # <version>
+    with:
+      target: k8s/overlays/prod
+      version: "2026-06.1"
+```
+
 ### Zizmor (`zizmor.yml`)
 
 Statically analyses GitHub Actions workflows for security problems with Zizmor.
