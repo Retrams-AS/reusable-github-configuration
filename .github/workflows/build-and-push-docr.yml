@@ -25,6 +25,10 @@ on:
         description: Docker build context
         type: string
         default: .
+      dockerfile:
+        description: Path to the Dockerfile, relative to the repository root (NOT to `context`)
+        type: string
+        default: Dockerfile
     secrets:
       DO_ACCESS_KEY:
         description: DigitalOcean API token with registry scope (required when push is true)
@@ -73,6 +77,7 @@ jobs:
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
           platforms: ${{ inputs.platforms }}
           push: ${{ inputs.push }}
           tags: ${{ inputs.image }}:${{ steps.sha.outputs.sha7 }}
