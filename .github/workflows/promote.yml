@@ -1,0 +1,74 @@
+name: Promote
+
+# Reusable: promote-many's "deploy a version to one target" half. Bumps the
+# quoted newTag in a single kustomize overlay and opens a promotion PR.
+# Merging that PR is the deploy (Argo CD syncs). Independently dispatchable —
+# release once, then promote to each target (dev/prod/clinic) deliberately.
+on:
+  workflow_call:
+    inputs:
+      target:
+        description: Overlay path whose newTag to bump, e.g. k8s/overlays/prod
+        required: true
+        type: string
+      version:
+        description: CalVer version to deploy (must already be minted by release_calver)
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Open promotion PR
+        env:
+          TARGET: ${{ inputs.target }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          name=$(basename "$TARGET")
+          branch="release/${VERSION}-${name}"
+          file="${TARGET}/kustomization.yaml"
+          if [ ! -f "$file" ]; then
+            echo "::error::${file} not found — is '${TARGET}' the right overlay path?"
+            exit 1
+          fi
+          # Already pending? Don't open a second PR or re-push.
+          if gh pr list --head "$branch" --state open --json number --jq '.[0].number' | grep -q .; then
+            echo "An open promotion PR already exists for ${branch}; nothing to do."
+            exit 0
+          fi
+          sed -i -E "s|(newTag: \")[^\"]*(\")|\1${VERSION}\2|" "$file"
+          grep -q "newTag: \"${VERSION}\"" "$file" \
+            || { echo "::error::${file} has no quoted newTag line to bump."; exit 1; }
+          if git diff --quiet -- "$file"; then
+            echo "${TARGET} is already at ${VERSION}; nothing to promote."
+            exit 0
+          fi
+          git switch -c "$branch"
+          git add "$file"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # A promotion only bumps an image tag in a kustomize overlay, so
+          # build/test/lint add nothing — [skip ci] keeps them from burning
+          # Actions minutes on the PR. Merging it (Argo CD sync) is the deploy.
+          git commit -m "release: bump ${name} to ${VERSION} [skip ci]"
+          # Authenticate git via gh's token (no token in the URL; the checkout
+          # persists no credentials). Fresh branch, so a plain push — no force.
+          gh auth setup-git
+          git push origin "HEAD:refs/heads/${branch}"
+          gh label create promotion --description "Release-generated overlay bump (excluded from release notes)" --force
+          gh pr create --base "$DEFAULT_BRANCH" --head "$branch" --label promotion \
+            --title "release: ${VERSION} -> ${name}" \
+            --body "Bumps \`images.newTag\` to \`${VERSION}\` for \`${TARGET}\`. Merging this PR deploys via Argo CD sync. Rollback = revert this PR."

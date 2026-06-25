@@ -1,0 +1,182 @@
+name: Release (SemVer)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_override:
+        description: "Optional: force the version. A bump (patch/minor/major) or an explicit vX.Y.Z. Leave empty to derive it from PR titles."
+        required: false
+        type: string
+        default: ""
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Cut SemVer release tag
+    runs-on: ubuntu-slim
+
+    permissions:
+      contents: write # create the tag ref + release
+      pull-requests: read # read merged PR titles to derive the bump
+
+    steps:
+      - name: Guard - releases must run from main
+        if: github.ref != 'refs/heads/main'
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error::Releases must be cut from main. This run is on '${REF}'."
+          exit 1
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Determine and create SemVer tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          OVERRIDE: ${{ inputs.version_override }}
+        run: |
+          set -euo pipefail
+
+          semver_re='^v[0-9]+\.[0-9]+\.[0-9]+$'
+
+          # Highest existing semver tag (base v0.0.0 if none yet).
+          tags="$(gh api --paginate "repos/$REPO/tags" --jq '.[].name')"
+          latest="$(printf '%s\n' "$tags" \
+            | grep -E "$semver_re" \
+            | sort -V \
+            | tail -n1 || true)"
+
+          if [ -z "$latest" ]; then
+            major=0; minor=0; patch=0
+          else
+            v="${latest#v}"
+            major="${v%%.*}"
+            rest="${v#*.}"
+            minor="${rest%%.*}"
+            patch="${rest##*.}"
+          fi
+
+          # Decide the version. Precedence: explicit override > a bump derived from
+          # the Conventional Commit type of the PRs merged since the last release.
+          bump=""
+          tag=""
+          source=""
+
+          if [ -n "${OVERRIDE:-}" ]; then
+            case "$OVERRIDE" in
+              major | minor | patch)
+                bump="$OVERRIDE"
+                source="override ($OVERRIDE)"
+                ;;
+              *)
+                # Explicit version: valid SemVer, strictly greater than latest.
+                if ! printf '%s' "$OVERRIDE" | grep -qE "$semver_re"; then
+                  echo "::error::version_override '$OVERRIDE' must be patch|minor|major or a vX.Y.Z tag."
+                  exit 1
+                fi
+                highest="$(printf '%s\n%s\n' "${latest:-v0.0.0}" "$OVERRIDE" | sort -V | tail -n1)"
+                if [ "$OVERRIDE" = "${latest:-v0.0.0}" ] || [ "$highest" != "$OVERRIDE" ]; then
+                  echo "::error::version_override '$OVERRIDE' must be greater than ${latest:-v0.0.0}."
+                  exit 1
+                fi
+                tag="$OVERRIDE"
+                source="override ($OVERRIDE)"
+                ;;
+            esac
+          else
+            # Titles of the PRs merged since the last release. Resolve each commit
+            # in the window to its associated PR(s); this is merge-strategy-agnostic.
+            if [ -n "$latest" ]; then
+              titles="$(gh api "repos/$REPO/compare/$latest...$SHA" --jq '.commits[].sha' \
+                | while read -r c; do
+                    [ -n "$c" ] && gh api "repos/$REPO/commits/$c/pulls" --jq '.[].title'
+                  done)"
+            else
+              # First release: every merged PR is in scope.
+              titles="$(gh api --paginate "repos/$REPO/pulls?state=closed&base=main&per_page=100" \
+                --jq '.[] | select(.merged_at != null) | .title')"
+            fi
+
+            # Highest Conventional Commit type wins. Breaking is marked with '!' in
+            # the title (e.g. 'feat!:'); feat -> minor; fix/perf -> patch; any other
+            # type (docs, chore, ci, ...) -> no release.
+            rank=0
+            if printf '%s\n' "$titles" | grep -qiE '^[a-z]+(\([^)]+\))?!:'; then
+              rank=3
+            elif printf '%s\n' "$titles" | grep -qiE '^feat(\([^)]+\))?:'; then
+              rank=2
+            elif printf '%s\n' "$titles" | grep -qiE '^(fix|perf)(\([^)]+\))?:'; then
+              rank=1
+            fi
+
+            case "$rank" in
+              3) bump="major" ;;
+              2) bump="minor" ;;
+              1) bump="patch" ;;
+              0)
+                echo "::error::No releasable changes (feat / fix / perf, or a breaking '!') in PRs since ${latest:-<none>}. Use version_override to force one."
+                exit 1
+                ;;
+            esac
+            source="derived ($bump)"
+          fi
+
+          # Apply the bump unless an explicit version was supplied.
+          if [ -z "$tag" ]; then
+            case "$bump" in
+              major) major=$((major + 1)); minor=0; patch=0 ;;
+              minor) minor=$((minor + 1)); patch=0 ;;
+              patch) patch=$((patch + 1)) ;;
+            esac
+            tag="v${major}.${minor}.${patch}"
+          fi
+
+          echo "Previous: ${latest:-<none>}  New tag: $tag  [$source]"
+
+          # Create a lightweight tag ref pointing at the dispatched commit.
+          gh api --method POST "repos/$REPO/git/refs" \
+            -f "ref=refs/tags/$tag" \
+            -f "sha=$SHA"
+
+          # Build the release body: an auto-generated changelog of the merged PRs
+          # since the previous tag (editable in the Release UI afterwards).
+          if [ -n "$latest" ]; then
+            body="$(gh api --method POST "repos/$REPO/releases/generate-notes" \
+              -f "tag_name=$tag" -f "previous_tag_name=$latest" --jq '.body')"
+          else
+            body="$(gh api --method POST "repos/$REPO/releases/generate-notes" \
+              -f "tag_name=$tag" --jq '.body')"
+          fi
+
+          # Publish the GitHub Release (the notes are editable in the UI after).
+          url="$(gh release create "$tag" --verify-tag --title "$tag" --notes "$body")"
+
+          # Report the result so a maintainer can grab the hash to pin against.
+          {
+            echo "## Released \`$tag\`"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Tag | \`$tag\` |"
+            echo "| Previous | \`${latest:-<none>}\` |"
+            echo "| Version source | $source |"
+            echo "| Commit | \`$SHA\` |"
+            echo "| Release | $url |"
+            echo ""
+            echo "### Pin in a consumer repo"
+            echo ""
+            echo '```yaml'
+            echo "uses: $REPO/.github/actions/setup-uv@$SHA  # $tag"
+            echo "uses: $REPO/.github/workflows/lint-and-format-python.yml@$SHA  # $tag"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,15 @@
+name: Fast-forward (self)
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  fast-forward:
+    # Dogfood this repo's OWN reusable workflow via a local path (not a pinned
+    # remote SHA), so a /fast-forward here exercises the version on this branch.
+    uses: ./.github/workflows/fast-forward.yml
+    secrets:
+      app-id: ${{ secrets.FAST_FORWARD_APP_ID }}
+      app-private-key: ${{ secrets.FAST_FORWARD_APP_PRIVATE_KEY }}

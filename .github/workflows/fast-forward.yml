@@ -1,0 +1,96 @@
+name: Fast-forward PR
+
+# Lands a PR by fast-forwarding the base branch onto the PR's commits: no merge
+# commit (linear history) and no rewrite (commits keep their original SHAs, so
+# their signatures stay Verified). It is the only merge style that preserves all
+# three at once — GitHub's rebase-merge button replays commits server-side and
+# drops their signatures.
+#
+# Trigger: a `/fast-forward` comment from a collaborator on an open PR. The push
+# to the protected base is performed with a GitHub App token, so that App must be
+# a bypass actor on the base branch's ruleset. The PR must be CLEAN (approved +
+# required checks green + already rebased onto base) or it is refused, never
+# force-landed; the ref update uses force=false, a final server-side guarantee
+# that only a true fast-forward can land.
+
+on:
+  workflow_call:
+    secrets:
+      app-id:
+        description: ID of the GitHub App that is a bypass actor on the base ruleset.
+        required: true
+      app-private-key:
+        description: Private key (PEM) of that GitHub App.
+        required: true
+
+permissions: {}
+
+jobs:
+  fast-forward:
+    name: Fast-forward base onto PR
+    # Only `/fast-forward` comments on a PR, from someone with write access. The
+    # comment body is compared in an expression, never expanded into a script.
+    if: >-
+      github.event.issue.pull_request &&
+      github.event.comment.body == '/fast-forward' &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      # Pinned create-github-app-token v3.2.0. The token is scoped to the
+      # minimum (contents + pull-requests + workflows write — workflows is
+      # needed to fast-forward over commits that touch .github/workflows/);
+      # the App is an intentional
+      # ruleset bypass actor (see issue #9), so the github-app audit is
+      # acknowledged rather than a misconfiguration.
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # zizmor: ignore[github-app]
+        with:
+          app-id: ${{ secrets.app-id }}
+          private-key: ${{ secrets.app-private-key }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+
+      - name: Fast-forward base onto the PR commits
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+
+          # CLEAN == mergeable + required checks green + approved + up to date with
+          # base. Up-to-date implies base is an ancestor of head, i.e. fast-
+          # forwardable. mergeStateStatus can be UNKNOWN transiently, so retry.
+          base="" head="" state=""
+          for _ in 1 2 3 4 5 6; do
+            read -r base head state < <(
+              gh pr view "$PR" --repo "$REPO" \
+                --json baseRefName,headRefOid,mergeStateStatus \
+                --jq '"\(.baseRefName) \(.headRefOid) \(.mergeStateStatus)"'
+            )
+            [ "$state" != "UNKNOWN" ] && break
+            echo "merge state UNKNOWN, retrying..."
+            sleep 5
+          done
+          echo "base=$base head=$head mergeState=$state"
+
+          if [ "$state" != "CLEAN" ]; then
+            {
+              echo ":x: Not fast-forwarding \`$base\` — PR merge state is \`$state\`, expected \`CLEAN\`."
+              echo
+              echo "A PR lands here by **fast-forward only** (no merge commit, signatures preserved), so it must be **approved**, have **required checks green**, and be **rebased onto \`$base\`**. If it is behind, rebase and comment \`/fast-forward\` again."
+            } > /tmp/ff-comment.md
+            gh pr comment "$PR" --repo "$REPO" --body-file /tmp/ff-comment.md
+            echo "::error::PR merge state is $state (need CLEAN)"
+            exit 1
+          fi
+
+          # force=false => fast-forward only; GitHub returns 422 on a non-FF update.
+          gh api --method PATCH "repos/${REPO}/git/refs/heads/${base}" \
+            -f sha="$head" -F force=false
+
+          gh pr comment "$PR" --repo "$REPO" \
+            --body ":fast_forward: Fast-forwarded \`$base\` onto \`${head:0:9}\`. Linear history; commit signatures preserved."

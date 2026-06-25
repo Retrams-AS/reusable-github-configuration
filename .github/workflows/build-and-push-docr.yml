@@ -1,0 +1,85 @@
+name: Build and push image to DOCR
+
+# Reusable: builds the caller's Dockerfile and (optionally) pushes the image
+# to DOCR tagged with the 7-char commit sha. Callers own the triggers and
+# path filters; pass push: false for PR build-only checks. Pair with a
+# release flow that promotes sha artifacts to immutable version tags by
+# retagging (reference implementation: fot_server).
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: Image name without tag, e.g. registry.digitalocean.com/the-retrams-registry/fot
+        required: true
+        type: string
+      push:
+        description: Push the sha-tagged image to DOCR (false = build-only check)
+        type: boolean
+        default: false
+      platforms:
+        description: Target platforms
+        type: string
+        default: linux/amd64
+      context:
+        description: Docker build context
+        type: string
+        default: .
+      dockerfile:
+        description: Path to the Dockerfile, relative to the repository root (NOT to `context`)
+        type: string
+        default: Dockerfile
+    secrets:
+      DO_ACCESS_KEY:
+        description: DigitalOcean API token with registry scope (required when push is true)
+        required: false
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Compute sha tag
+        id: sha
+        run: echo "sha7=$(echo "$GITHUB_SHA" | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      # Authenticate via the org docr-login composite, checked out from this
+      # workflow's own repo at the called ref and referenced by local path
+      # (./...) — which zizmor's unpinned-uses policy doesn't apply to, so no
+      # inlining is needed (mirrors setup-uv in lint-and-format-python.yml).
+      - name: Checkout shared actions at the called ref
+        if: inputs.push
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: ._shared
+          persist-credentials: false
+
+      - name: Log in to DOCR (short-lived credentials)
+        if: inputs.push
+        uses: ./._shared/.github/actions/docr-login
+        with:
+          token: ${{ secrets.DO_ACCESS_KEY }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Build image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          push: ${{ inputs.push }}
+          tags: ${{ inputs.image }}:${{ steps.sha.outputs.sha7 }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

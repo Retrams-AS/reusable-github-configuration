@@ -1,0 +1,107 @@
+name: Release (CalVer)
+
+# Reusable: promote-many's "mint a version" half. Retags the caller's existing
+# <image>:<sha7> artifact (built at merge time) to <image>:<version>, tags the
+# commit, and optionally cuts a GitHub Release. Never rebuilds. Runs in the
+# CALLER's repo (tag + release land there). Pair with promote.yml.
+#
+# The tag is minted via gh (API), not `git push`, so the checkout needs no
+# persisted credentials.
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: Full image ref without tag, e.g. registry.digitalocean.com/the-retrams-registry/timekontroll-backend
+        required: true
+        type: string
+      version:
+        description: CalVer version to mint, YYYY-MM.N (e.g. 2026-06.1)
+        required: true
+        type: string
+      make-github-release:
+        description: Cut a GitHub Release with generated notes
+        type: boolean
+        default: true
+    secrets:
+      DO_ACCESS_KEY:
+        description: DigitalOcean API token with registry scope
+        required: true
+
+permissions: {}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest # needs Docker for imagetools — not ubuntu-slim
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve version (validate + new-vs-existing tag)
+        id: tag
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ! echo "$VERSION" | grep -qE '^[0-9]{4}-[0-9]{2}\.[0-9]+$'; then
+            echo "::error::version must be CalVer YYYY-MM.N (e.g. 2026-06.1), got '$VERSION'."
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout shared actions at the called ref
+        if: steps.tag.outputs.build == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: ._shared
+          persist-credentials: false
+
+      - name: Log in to DOCR (short-lived credentials)
+        if: steps.tag.outputs.build == 'true'
+        uses: ./._shared/.github/actions/docr-login
+        with:
+          token: ${{ secrets.DO_ACCESS_KEY }}
+
+      # Build-once/promote-many: retag the existing sha artifact to the CalVer
+      # tag (manifest copy — byte-identical, no rebuild).
+      - name: Promote sha artifact to CalVer tag
+        if: steps.tag.outputs.build == 'true'
+        env:
+          IMAGE: ${{ inputs.image }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          sha7=$(echo "$GITHUB_SHA" | cut -c1-7)
+          if ! docker buildx imagetools create --tag "${IMAGE}:${VERSION}" "${IMAGE}:${sha7}"; then
+            echo "::error::No artifact ${IMAGE}:${sha7} in DOCR — the Build workflow has not pushed this commit. Dispatch Build, then re-run."
+            exit 1
+          fi
+
+      # Tag the commit only after the image exists. gh release create --target
+      # mints the tag + release in one call; the no-release path uses the git
+      # refs API. Either way no `git push`, so the checkout stays credential-less.
+      - name: Tag the version (+ GitHub Release)
+        if: steps.tag.outputs.build == 'true'
+        env:
+          VERSION: ${{ inputs.version }}
+          MAKE_RELEASE: ${{ inputs.make-github-release }}
+        run: |
+          if [ "$MAKE_RELEASE" = "true" ]; then
+            prev=$(gh release list --exclude-pre-releases --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName // ""')
+            if [ -n "$prev" ]; then
+              gh release create "$VERSION" --target "$GITHUB_SHA" --title "$VERSION" --generate-notes --notes-start-tag "$prev"
+            else
+              gh release create "$VERSION" --target "$GITHUB_SHA" --title "$VERSION" --generate-notes
+            fi
+          else
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$VERSION" -f sha="$GITHUB_SHA" >/dev/null
+          fi
