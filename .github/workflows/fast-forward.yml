@@ -38,7 +38,9 @@ jobs:
     permissions: {}
     steps:
       # Pinned create-github-app-token v3.2.0. The token is scoped to the
-      # minimum (contents + pull-requests write); the App is an intentional
+      # minimum (contents + pull-requests + workflows write — workflows is
+      # needed to fast-forward over commits that touch .github/workflows/);
+      # the App is an intentional
       # ruleset bypass actor (see issue #9), so the github-app audit is
       # acknowledged rather than a misconfiguration.
       - name: Mint GitHub App token
@@ -49,6 +51,7 @@ jobs:
           private-key: ${{ secrets.app-private-key }}
           permission-contents: write
           permission-pull-requests: write
+          permission-workflows: write
 
       - name: Fast-forward base onto the PR commits
         env:
