@@ -60,7 +60,10 @@ jobs:
           git add "$file"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "release: bump ${name} to ${VERSION}"
+          # A promotion only bumps an image tag in a kustomize overlay, so
+          # build/test/lint add nothing — the skip-ci marker keeps them from
+          # burning Actions minutes. Merging it (Argo CD sync) is the deploy.
+          git commit -m "release: bump ${name} to ${VERSION} [skip ci]"
           # Authenticate git via gh's token (no token in the URL; the checkout
           # persists no credentials). Fresh branch, so a plain push — no force.
           gh auth setup-git
