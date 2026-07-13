@@ -19,10 +19,10 @@ See [Releasing](#releasing) for how to find a SHA.
 | `.github/workflows/lint-and-format-python.yml` | Reusable workflow — runs `ruff check` and `ruff format --check` via uv      |
 | `.github/workflows/zizmor.yml`                 | Reusable workflow — scans your Actions YAML for security issues with Zizmor |
 | `.github/workflows/pr-title-check.yml`         | Reusable workflow — checks each PR title is a valid Conventional Commit     |
-| `.github/actions/setup-uv`                     | Composite action — installs uv, sets up Python, runs `uv sync`              |
 | `.github/workflows/lint-and-format-node.yml`   | Reusable workflow — runs `yarn lint` and `yarn format` (ESLint + Prettier)  |
 | `.github/workflows/test-node.yml`              | Reusable workflow — runs `yarn test:unit` (Vitest)                          |
 | `.github/workflows/e2e-cypress.yml`            | Reusable workflow — runs Cypress e2e (build → preview → wait → run)         |
+| `.github/actions/setup-uv`                     | Composite action — installs uv, sets up Python, runs `uv sync`              |
 | `.github/actions/setup-node-yarn`              | Composite action — Corepack + Node + `yarn install --immutable`             |
 
 ## Reusable workflows
@@ -69,7 +69,8 @@ jobs:
       contents: read
     uses: Retrams-AS/reusable-github-configuration/.github/workflows/test-node.yml@<commit-sha> # <version>
     with:
-      node-version: "20" # optional, defaults to "20"
+      node-version: "20"      # optional, defaults to "20"
+      enable-scripts: false   # optional, defaults to false (skips install build scripts)
 ```
 
 ### E2E — Cypress (`e2e-cypress.yml`)
