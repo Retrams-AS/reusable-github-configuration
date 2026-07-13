@@ -1,0 +1,67 @@
+name: E2E (Cypress)
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node.js version to use
+        type: string
+        default: "20"
+      build-command:
+        description: Command Cypress runs to build the app before serving
+        type: string
+        default: yarn build
+      start-command:
+        description: Command Cypress runs to serve the built app
+        type: string
+        default: yarn preview
+      wait-on:
+        description: URL Cypress waits for before running specs
+        type: string
+        default: http://localhost:4173
+      wait-on-timeout:
+        description: Seconds to wait for the server before failing
+        type: number
+        default: 120
+
+jobs:
+  e2e:
+    name: E2E (Cypress)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Checkout shared actions at the called ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: ._shared
+          persist-credentials: false
+
+      - name: Set up Node + Yarn
+        uses: ./._shared/.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ inputs.node-version }}
+          # e2e exercises the built web renderer served by preview, not native
+          # modules — skip the install build scripts.
+          enable-scripts: "false"
+
+      - name: Install Cypress binary
+        # Needed because install scripts were disabled above (which normally
+        # triggers Cypress's own binary download on install).
+        run: yarn cypress install
+
+      - name: Run Cypress
+        uses: cypress-io/github-action@fa4a118725a8f001170d49631ea89e5d66fee626 # v7.4.1
+        with:
+          install: false
+          build: ${{ inputs.build-command }}
+          start: ${{ inputs.start-command }}
+          wait-on: ${{ inputs.wait-on }}
+          wait-on-timeout: ${{ inputs.wait-on-timeout }}
