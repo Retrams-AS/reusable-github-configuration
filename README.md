@@ -63,7 +63,15 @@ Mints a CalVer `YYYY-MM.N` version by retagging the existing `<image>:<sha7>`
 artifact (never rebuilds), tagging the commit, and (optionally) cutting a
 GitHub Release. Build-once/promote-many; pair with `promote.yml`.
 
-**Usage in another repository:**
+The `version` input is optional. When omitted, the workflow mints it: current
+UTC `YYYY-MM`, patch = highest existing `N` for that month + 1 (first release
+of a month is `.1`). Re-dispatching on a commit that already carries a CalVer
+tag reuses that version instead of minting a new one, so re-runs are safe.
+Either way the resolved version is exposed as the `version` **output** — chain
+`promote` on it (see below). Pass `version` explicitly only for a deliberate
+override.
+
+**Usage in another repository** (with a chained promote to dev):
 
 ```yaml
 jobs:
@@ -71,16 +79,43 @@ jobs:
     uses: Retrams-AS/reusable-github-configuration/.github/workflows/release_calver.yml@<commit-sha> # <version>
     with:
       image: registry.digitalocean.com/the-retrams-registry/<service>
-      version: "2026-06.1"
     secrets:
       DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
+
+  promote-dev:
+    needs: release
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/promote.yml@<commit-sha> # <version>
+    with:
+      target: k8s/overlays/dev
+      version: ${{ needs.release.outputs.version }}
+    secrets:
+      app-id: ${{ secrets.RELEASE_APP_ID }}
+      app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 ```
 
 ### Promote (`promote.yml`)
 
-Bumps `images.newTag` in one overlay and opens a promotion PR — merging it is
-the deploy (Argo CD syncs). Run once per target: `release_calver` mints a
-version, `promote` deploys it to dev / prod / a clinic, each independently.
+Bumps `images.newTag` in one overlay by committing straight to the default
+branch — that commit is the deploy (Argo CD syncs). Run once per target:
+`release_calver` mints a version, `promote` deploys it to dev / prod / a
+clinic, each independently. Rollback = revert the bump commit.
+
+The commit is made with the org's dedicated **Release App** (a GitHub App)
+that must be installed on the repo and be a **bypass actor** on the default
+branch's ruleset. The commit shows as Verified and carries `[skip ci]`, so
+build/test/lint don't run on it.
+
+**One-time App setup** (org level, once):
+
+1. Org settings → Developer settings → GitHub Apps → New App (**Release App**).
+   Repository permission: **Contents: Read and write**. Nothing else;
+   webhook off.
+2. Generate a private key; note the App ID.
+3. Install the App on each service repo that promotes.
+4. In each such repo's default-branch **ruleset**, add the App as a
+   **bypass actor**.
+5. Store the App ID and PEM as secrets (org-level with repo access, or
+   per-repo): `RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY`.
 
 **Usage in another repository:**
 
@@ -91,6 +126,9 @@ jobs:
     with:
       target: k8s/overlays/prod
       version: "2026-06.1"
+    secrets:
+      app-id: ${{ secrets.RELEASE_APP_ID }}
+      app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 ```
 
 ### Zizmor (`zizmor.yml`)
