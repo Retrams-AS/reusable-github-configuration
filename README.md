@@ -19,7 +19,11 @@ See [Releasing](#releasing) for how to find a SHA.
 | `.github/workflows/lint-and-format-python.yml` | Reusable workflow — runs `ruff check` and `ruff format --check` via uv      |
 | `.github/workflows/zizmor.yml`                 | Reusable workflow — scans your Actions YAML for security issues with Zizmor |
 | `.github/workflows/pr-title-check.yml`         | Reusable workflow — checks each PR title is a valid Conventional Commit     |
+| `.github/workflows/lint-and-format-node.yml`   | Reusable workflow — runs `yarn lint` and `yarn format` (ESLint + Prettier)  |
+| `.github/workflows/test-node.yml`              | Reusable workflow — runs `yarn test:unit` (Vitest)                          |
+| `.github/workflows/e2e-cypress.yml`            | Reusable workflow — runs Cypress e2e (build → preview → wait → run)         |
 | `.github/actions/setup-uv`                     | Composite action — installs uv, sets up Python, runs `uv sync`              |
+| `.github/actions/setup-node-yarn`              | Composite action — Corepack + Node + `yarn install --immutable`             |
 
 ## Reusable workflows
 
@@ -34,6 +38,59 @@ jobs:
     uses: Retrams-AS/reusable-github-configuration/.github/workflows/lint-and-format-python.yml@<commit-sha> # <calver>
     with:
       python-version: "3.12" # optional, defaults to "3.10"
+```
+
+### Lint and format — Node (`lint-and-format-node.yml`)
+
+Runs `yarn lint` (ESLint) and `yarn format` (Prettier) for Yarn/Corepack
+frontends. **Script contract:** the caller's `package.json` must expose `lint`
+and `format` scripts.
+
+```yaml
+jobs:
+  lint-and-format:
+    permissions:
+      contents: read
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/lint-and-format-node.yml@<commit-sha> # <version>
+    with:
+      node-version: "20"      # optional, defaults to "20"
+      enable-scripts: false   # optional, defaults to false (skips install build scripts)
+```
+
+### Test — Node (`test-node.yml`)
+
+Runs `yarn test:unit` (Vitest). **Script contract:** the caller must expose a
+`test:unit` script.
+
+```yaml
+jobs:
+  unit:
+    permissions:
+      contents: read
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/test-node.yml@<commit-sha> # <version>
+    with:
+      node-version: "20"      # optional, defaults to "20"
+      enable-scripts: false   # optional, defaults to false (skips install build scripts)
+```
+
+### E2E — Cypress (`e2e-cypress.yml`)
+
+Builds the app, serves it, waits for it, and runs Cypress specs. **Script
+contract:** the `build-command`/`start-command` (defaults `yarn build` /
+`yarn preview`) must produce and serve the app at `wait-on`.
+
+```yaml
+jobs:
+  e2e:
+    permissions:
+      contents: read
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/e2e-cypress.yml@<commit-sha> # <version>
+    with:
+      node-version: "20"                   # optional
+      build-command: "yarn build"          # optional
+      start-command: "yarn preview"        # optional
+      wait-on: "http://localhost:4173"     # optional
+      wait-on-timeout: 120                 # optional
 ```
 
 ### Build and push image to DOCR (`build-and-push-docr.yml`)
@@ -140,6 +197,21 @@ steps:
   - uses: Retrams-AS/reusable-github-configuration/.github/actions/setup-uv@<commit-sha> # <version>
     with:
       python-version: "3.12" # optional, defaults to "3.10"
+```
+
+### `setup-node-yarn`
+
+Enables Corepack, sets up Node with the Yarn cache, and runs
+`yarn install --immutable`. The Node analog of `setup-uv`. Checkout the repo
+first (this action does not).
+
+```yaml
+steps:
+  - uses: actions/checkout@v6
+  - uses: Retrams-AS/reusable-github-configuration/.github/actions/setup-node-yarn@<commit-sha> # <version>
+    with:
+      node-version: "20"      # optional, defaults to "20"
+      enable-scripts: "false" # optional, defaults to "false"
 ```
 
 ## Releasing

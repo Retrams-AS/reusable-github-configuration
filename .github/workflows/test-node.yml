@@ -1,0 +1,46 @@
+name: Tests (Node)
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node.js version to use
+        type: string
+        default: "20"
+      enable-scripts:
+        description: Run package install scripts (sets YARN_ENABLE_SCRIPTS)
+        type: boolean
+        default: false
+
+jobs:
+  unit:
+    name: Unit (Vitest)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Checkout shared actions at the called ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # job.workflow_repository/sha resolve this reusable workflow's repo and
+          # the exact SHA the caller pinned, so the composite action matches the
+          # workflow version. (Not available on GitHub Enterprise Server.)
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: ._shared
+          persist-credentials: false
+
+      - name: Set up Node + Yarn
+        uses: ./._shared/.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ inputs.node-version }}
+          enable-scripts: ${{ inputs.enable-scripts }}
+
+      - name: Run unit tests
+        # GitHub Actions sets CI=true, so Vitest runs once (no watch mode).
+        run: yarn test:unit
