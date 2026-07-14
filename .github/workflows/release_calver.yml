@@ -3,7 +3,8 @@ name: Release (CalVer)
 # Reusable: promote-many's "mint a version" half. Retags the caller's existing
 # <image>:<sha7> artifact (built at merge time) to <image>:<version>, tags the
 # commit, and optionally cuts a GitHub Release. Never rebuilds. Runs in the
-# CALLER's repo (tag + release land there). Pair with promote.yml.
+# CALLER's repo (tag + release land there). Pair with promote.yml — the
+# resolved version is exposed as an output so promote can be chained.
 #
 # The tag is minted via gh (API), not `git push`, so the checkout needs no
 # persisted credentials.
@@ -15,13 +16,21 @@ on:
         required: true
         type: string
       version:
-        description: CalVer version to mint, YYYY-MM.N (e.g. 2026-06.1)
-        required: true
+        description: >-
+          CalVer version to mint, YYYY-MM.N (e.g. 2026-06.1). Omit to auto-mint:
+          current UTC year-month, patch = highest existing N for that month + 1.
+          If a CalVer tag already points at the commit, that version is reused.
+        required: false
         type: string
+        default: ""
       make-github-release:
         description: Cut a GitHub Release with generated notes
         type: boolean
         default: true
+    outputs:
+      version:
+        description: The CalVer version that was minted (or reused, if the commit was already tagged)
+        value: ${{ jobs.release.outputs.version }}
     secrets:
       DO_ACCESS_KEY:
         description: DigitalOcean API token with registry scope
@@ -34,6 +43,11 @@ jobs:
     runs-on: ubuntu-latest # needs Docker for imagetools — not ubuntu-slim
     permissions:
       contents: write
+    # Serialize releases so two concurrent dispatches can't auto-mint the same N.
+    concurrency:
+      group: release-calver
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -42,20 +56,37 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Resolve version (validate + new-vs-existing tag)
+      # Tag inspection relies on fetch-depth: 0 above (all tags are local).
+      - name: Resolve version (auto-mint, validate, new-vs-existing tag)
         id: tag
         env:
           VERSION: ${{ inputs.version }}
         run: |
-          if ! echo "$VERSION" | grep -qE '^[0-9]{4}-[0-9]{2}\.[0-9]+$'; then
-            echo "::error::version must be CalVer YYYY-MM.N (e.g. 2026-06.1), got '$VERSION'."
-            exit 1
+          calver='^[0-9]{4}-[0-9]{2}\.[0-9]+$'
+          if [ -n "$VERSION" ]; then
+            if ! echo "$VERSION" | grep -qE "$calver"; then
+              echo "::error::version must be CalVer YYYY-MM.N (e.g. 2026-06.1), got '$VERSION'."
+              exit 1
+            fi
+          else
+            existing=$(git tag --points-at "$GITHUB_SHA" | { grep -E "$calver" || true; } | sort -V | tail -1)
+            if [ -n "$existing" ]; then
+              VERSION="$existing"
+              echo "Commit already tagged ${VERSION}; reusing it."
+            else
+              ym=$(date -u +%Y-%m)
+              last=$(git tag -l "${ym}.*" | { grep -E "$calver" || true; } | sed "s/^${ym}\.//" | sort -n | tail -1)
+              VERSION="${ym}.$(( ${last:-0} + 1 ))"
+              echo "Auto-minting ${VERSION}."
+            fi
           fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
             echo "build=false" >> "$GITHUB_OUTPUT"
           else
             echo "build=true" >> "$GITHUB_OUTPUT"
           fi
+          echo "Release version: \`$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Checkout shared actions at the called ref
         if: steps.tag.outputs.build == 'true'
@@ -78,7 +109,7 @@ jobs:
         if: steps.tag.outputs.build == 'true'
         env:
           IMAGE: ${{ inputs.image }}
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.tag.outputs.version }}
         run: |
           sha7=$(echo "$GITHUB_SHA" | cut -c1-7)
           if ! docker buildx imagetools create --tag "${IMAGE}:${VERSION}" "${IMAGE}:${sha7}"; then
@@ -92,7 +123,7 @@ jobs:
       - name: Tag the version (+ GitHub Release)
         if: steps.tag.outputs.build == 'true'
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.tag.outputs.version }}
           MAKE_RELEASE: ${{ inputs.make-github-release }}
         run: |
           if [ "$MAKE_RELEASE" = "true" ]; then
