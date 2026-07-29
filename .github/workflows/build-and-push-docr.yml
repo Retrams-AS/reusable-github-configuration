@@ -5,6 +5,10 @@ name: Build and push image to DOCR
 # path filters; pass push: false for PR build-only checks. Pair with a
 # release flow that promotes sha artifacts to immutable version tags by
 # retagging (reference implementation: fot_server).
+#
+# If the Dockerfile PULLS a private image (e.g. a prebuilt base), pass
+# registry_login: true so build-only runs authenticate too — otherwise they
+# fail on an unauthorized pull.
 
 on:
   workflow_call:
@@ -15,6 +19,12 @@ on:
         type: string
       push:
         description: Push the sha-tagged image to DOCR (false = build-only check)
+        type: boolean
+        default: false
+      registry_login:
+        description: >-
+          Log in to DOCR even when not pushing. Needed when the Dockerfile pulls a
+          private base image, since a build-only check still has to authenticate.
         type: boolean
         default: false
       platforms:
@@ -31,7 +41,7 @@ on:
         default: Dockerfile
     secrets:
       DO_ACCESS_KEY:
-        description: DigitalOcean API token with registry scope (required when push is true)
+        description: DigitalOcean API token with registry scope (required when push or registry_login is true)
         required: false
 
 permissions: {}
@@ -55,8 +65,10 @@ jobs:
       # workflow's own repo at the called ref and referenced by local path
       # (./...) — which zizmor's unpinned-uses policy doesn't apply to, so no
       # inlining is needed (mirrors setup-uv in lint-and-format-python.yml).
+      # Gated identically to the login step below: skipping this checkout while
+      # logging in would fail on a missing ./._shared path.
       - name: Checkout shared actions at the called ref
-        if: inputs.push
+        if: inputs.push || inputs.registry_login
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: ${{ job.workflow_repository }}
@@ -65,7 +77,7 @@ jobs:
           persist-credentials: false
 
       - name: Log in to DOCR (short-lived credentials)
-        if: inputs.push
+        if: inputs.push || inputs.registry_login
         uses: ./._shared/.github/actions/docr-login
         with:
           token: ${{ secrets.DO_ACCESS_KEY }}
