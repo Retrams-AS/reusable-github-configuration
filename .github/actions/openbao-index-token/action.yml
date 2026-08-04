@@ -1,0 +1,79 @@
+name: OpenBao index token
+description: >-
+  Exchanges this job's GitHub OIDC token for a short-lived JWT that
+  pypi.retrams.no accepts. CI stores no credential: the OIDC token is minted
+  per-run by GitHub, and the JWT it buys expires in minutes. Requires
+  `permissions: id-token: write` on the calling job, and — because the job runs
+  in a GitHub Environment — that the Environment's name matches the subject the
+  OpenBao role binds.
+
+inputs:
+  bao-addr:
+    description: OpenBao base URL, reachable from GitHub-hosted runners
+    default: "https://bao.retrams.no"
+  bao-ca:
+    description: >-
+      PEM of the CA that issued OpenBao's listener certificate (org variable
+      BAO_SCANNER_CA). Required: the listener is privately issued, so a runner
+      trusting only public roots fails the handshake before any auth happens.
+    required: true
+  audience:
+    description: Audience to request in the GitHub OIDC token; must equal the role's bound_audiences
+    default: "package-index"
+  jwt-role:
+    description: OpenBao JWT auth role
+    default: "package-index-ci"
+  identity-role:
+    description: OpenBao identity/oidc role that mints the JWT the index verifies
+    default: "package-index-publish"
+
+outputs:
+  token:
+    description: Short-lived RS256 JWT for the index (masked in logs)
+    value: ${{ steps.exchange.outputs.token }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Exchange GitHub OIDC for an index token
+      id: exchange
+      shell: bash
+      env:
+        BAO_ADDR: ${{ inputs.bao-addr }}
+        BAO_CA: ${{ inputs.bao-ca }}
+        AUDIENCE: ${{ inputs.audience }}
+        JWT_ROLE: ${{ inputs.jwt-role }}
+        IDENTITY_ROLE: ${{ inputs.identity-role }}
+      run: |
+        set -euo pipefail
+
+        ca=$(mktemp)
+        printf '%s\n' "$BAO_CA" > "$ca"
+
+        # GitHub injects these two only when the job has id-token: write.
+        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+          echo "::error::No OIDC token available. The calling job needs 'permissions: id-token: write'."
+          exit 1
+        fi
+
+        oidc=$(curl -sS --fail-with-body \
+          -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" | jq -r .value)
+
+        # auth/jwt/login proves who we are and returns an OPAQUE service token.
+        # The index cannot verify that; its only job is to authorise the next call.
+        svc=$(curl -sS --fail-with-body --cacert "$ca" \
+          -X POST "${BAO_ADDR}/v1/auth/jwt/login" \
+          -d "$(jq -nc --arg r "$JWT_ROLE" --arg j "$oidc" '{role:$r,jwt:$j}')" \
+          | jq -r .auth.client_token)
+        echo "::add-mask::$svc"
+
+        # identity/oidc mints the RS256 JWT the index actually verifies against JWKS.
+        token=$(curl -sS --fail-with-body --cacert "$ca" \
+          -H "X-Vault-Token: $svc" \
+          "${BAO_ADDR}/v1/identity/oidc/token/${IDENTITY_ROLE}" \
+          | jq -r .data.token)
+        echo "::add-mask::$token"
+
+        rm -f "$ca"
+        echo "token=$token" >> "$GITHUB_OUTPUT"
