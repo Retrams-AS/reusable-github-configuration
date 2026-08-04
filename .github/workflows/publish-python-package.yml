@@ -10,6 +10,10 @@ name: Publish Python package
 # the upload is skipped as already-present. The reverse order would leave a tag
 # on a version that does not exist and burn a number.
 #
+# Self-healing stops at the tag: once v<version> exists, a re-run recomputes the
+# same version and the tag guard refuses it, so a failure in the Release step
+# needs manual recovery (attach the distributions, or delete the tag and re-run).
+#
 # The job runs in a GitHub Environment so its OIDC subject is
 # repo:<org>/<repo>:environment:<name> -- stable across releases, unlike a tag
 # ref, which is what lets the OpenBao role bind an exact string.
@@ -62,15 +66,29 @@ jobs:
     concurrency:
       group: publish-python-${{ github.repository }}
     permissions:
-      id-token: write
+      id-token: write # OIDC subject exchanged with OpenBao for the index token
+      contents: read # clone the private repo and read refs with github.token; every
+      # write to the repo (commit, tag, Release) uses the App token instead
     outputs:
       version: ${{ steps.bump.outputs.version }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Checkout the caller
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
-      - uses: ./.github/actions/setup-uv
+      # `./` in a called workflow resolves against the CALLER's checkout, which
+      # has none of these actions. Fetch them from the repo this file lives in,
+      # at the exact ref the caller pinned.
+      - name: Checkout shared actions at the called ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: ._shared
+          persist-credentials: false
+
+      - uses: ./._shared/.github/actions/setup-uv
         with:
           python-version: ${{ inputs.python-version }}
 
@@ -84,6 +102,12 @@ jobs:
             major|minor|patch) ;;
             *) echo "::error::bump must be major, minor or patch, got '$BUMP'."; exit 1 ;;
           esac
+          # Both files are committed as one tree later; if either is missing the
+          # commit would write an empty blob and desync them. Fail here, before
+          # anything is published, where failing costs nothing.
+          [ -f pyproject.toml ] && [ -s uv.lock ] || {
+            echo "::error::pyproject.toml and uv.lock must both exist and be non-empty."; exit 1
+          }
           # Rewrites pyproject.toml AND re-locks, so uv.lock's own entry moves too.
           version=$(uv version --bump "$BUMP" --short)
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -96,8 +120,13 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if gh api "repos/${REPO}/git/ref/tags/v${VERSION}" >/dev/null 2>&1; then
+          # Only a genuine 404 means "free". Swallowing every failure would read
+          # a 403 or an outage as absence and let the release proceed.
+          if out=$(gh api "repos/${REPO}/git/ref/tags/v${VERSION}" 2>&1); then
             echo "::error::Tag v${VERSION} already exists. A previous release minted this version."
+            exit 1
+          elif ! grep -q 'Not Found' <<<"$out"; then
+            echo "::error::Could not determine whether tag v${VERSION} exists: $out"
             exit 1
           fi
 
@@ -124,7 +153,7 @@ jobs:
 
       - name: Mint the index token
         id: index-token
-        uses: ./.github/actions/openbao-index-token
+        uses: ./._shared/.github/actions/openbao-index-token
         with:
           bao-ca: ${{ inputs.bao-ca }}
 
@@ -137,12 +166,17 @@ jobs:
           CHECK_URL: ${{ inputs.check-url }}
         run: |
           set -euo pipefail
+          shopt -s failglob # an empty dist/ must not pass the literal 'dist/*' through
           if [ -n "$CHECK_URL" ]; then
             uv publish --check-url "$CHECK_URL" dist/*
           else
             uv publish dist/*
           fi
 
+      # Pinned create-github-app-token v3.2.0, token scoped to the minimum
+      # (contents write). The App is an intentional ruleset bypass actor (see
+      # issue #9), so the github-app audit is acknowledged rather than a
+      # misconfiguration.
       - name: Mint GitHub App token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # zizmor: ignore[github-app]
@@ -155,6 +189,7 @@ jobs:
       # two calls would be two commits and could half-apply, leaving the lockfile
       # out of sync with the manifest on the default branch.
       - name: Commit the bump and tag it
+        id: commit
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
@@ -166,9 +201,13 @@ jobs:
 
           base_tree=$(gh api "repos/${REPO}/git/commits/${BASE}" --jq .tree.sha)
 
+          # base64 must be its own command: as an argument its failure would be
+          # discarded and gh would happily post content="" -- a valid empty blob.
           mk_blob() {
+            local content
+            content=$(base64 -w0 "$1") || exit 1
             gh api --method POST "repos/${REPO}/git/blobs" \
-              -f content="$(base64 -w0 "$1")" -f encoding=base64 --jq .sha
+              -f content="$content" -f encoding=base64 --jq .sha
           }
           pyproject_blob=$(mk_blob pyproject.toml)
           lock_blob=$(mk_blob uv.lock)
@@ -196,13 +235,20 @@ jobs:
 
           gh api --method POST "repos/${REPO}/git/refs" \
             -f ref="refs/tags/v${VERSION}" -f sha="$commit" >/dev/null
-          echo "COMMIT=$commit" >> "$GITHUB_ENV"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
       - name: Cut the Release with the distributions attached
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           VERSION: ${{ steps.bump.outputs.version }}
+          COMMIT: ${{ steps.commit.outputs.commit }}
         run: |
           set -euo pipefail
+          # failglob: an empty dist/ must fail here rather than uploading the
+          # literal 'dist/*'. The tag already exists at this point, so this is
+          # the one failure the workflow cannot heal by re-running.
+          shopt -s failglob
+          # --target is inert (the tag exists already); belt-and-braces so the
+          # Release can never attach itself to a different commit.
           gh release create "v${VERSION}" --title "v${VERSION}" \
             --target "$COMMIT" --generate-notes dist/*
