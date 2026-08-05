@@ -212,8 +212,12 @@ permissions problem:**
 2. The OIDC **audience** must equal the OpenBao role's `bound_audiences`
    (`package-index`).
 3. `bao-ca` must carry the CA that issued OpenBao's listener certificate
-   (`vars.BAO_SCANNER_CA`). `bao.retrams.no` is privately issued, so a runner
+   (`secrets.BAO_SCANNER_CA`). `bao.retrams.no` is privately issued, so a runner
    trusting only public roots fails the TLS handshake before any auth happens.
+   It goes under `secrets:`, not `with:` — **not** because a public root CA needs
+   protecting, but because the org holds it as a secret, and the `secrets`
+   context is unavailable in a caller's `with:` block. An input could never be
+   given the value that actually exists.
 
 **Adding a new publishing repo is an OpenBao change, not just a workflow file.**
 The role's `bound_claims.sub` lists each permitted subject; see the platform
@@ -246,10 +250,10 @@ jobs:
       contents: read
     with:
       bump: ${{ inputs.bump }}
-      bao-ca: ${{ vars.BAO_SCANNER_CA }}
     secrets:
       app-id: ${{ secrets.RELEASE_APP_ID }}
       app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      bao-ca: ${{ secrets.BAO_SCANNER_CA }}
 ```
 
 ### Zizmor (`zizmor.yml`)
@@ -337,7 +341,8 @@ jobs:
       - id: token
         uses: Retrams-AS/reusable-github-configuration/.github/actions/openbao-index-token@<commit-sha> # <version>
         with:
-          bao-ca: ${{ vars.BAO_SCANNER_CA }}
+          # A step's `with:` can read `secrets`; a reusable-workflow call's cannot.
+          bao-ca: ${{ secrets.BAO_SCANNER_CA }}
       - env:
           UV_INDEX_RETRAMS_USERNAME: __token__
           UV_INDEX_RETRAMS_PASSWORD: ${{ steps.token.outputs.token }}

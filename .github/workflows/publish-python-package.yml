@@ -39,10 +39,6 @@ on:
       python-version:
         type: string
         default: "3.11"
-      bao-ca:
-        description: PEM of OpenBao's listener CA (pass ${{ vars.BAO_SCANNER_CA }})
-        required: true
-        type: string
     outputs:
       version:
         description: The version that was published
@@ -53,6 +49,14 @@ on:
         required: true
       app-private-key:
         description: Private key (PEM) of that GitHub App.
+        required: true
+      # Not secret -- it is a public root, handed to every client in the TLS
+      # handshake. It is declared here anyway because the org holds it as
+      # `secrets.BAO_SCANNER_CA`, and the `secrets` context is unavailable in a
+      # caller's `with:` block (only in its `secrets:` block), so an input could
+      # never be given the value that actually exists.
+      bao-ca:
+        description: PEM of OpenBao's listener CA (pass ${{ secrets.BAO_SCANNER_CA }}).
         required: true
 
 permissions: {}
@@ -155,7 +159,7 @@ jobs:
         id: index-token
         uses: ./._shared/.github/actions/openbao-index-token
         with:
-          bao-ca: ${{ inputs.bao-ca }}
+          bao-ca: ${{ secrets.bao-ca }}
 
       - name: Publish
         env:

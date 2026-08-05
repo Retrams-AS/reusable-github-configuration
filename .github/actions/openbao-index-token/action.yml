@@ -13,9 +13,12 @@ inputs:
     default: "https://bao.retrams.no"
   bao-ca:
     description: >-
-      PEM of the CA that issued OpenBao's listener certificate (org variable
+      PEM of the CA that issued OpenBao's listener certificate (org secret
       BAO_SCANNER_CA). Required: the listener is privately issued, so a runner
       trusting only public roots fails the handshake before any auth happens.
+      A composite action takes no `secrets`, so the caller passes the value in
+      as this input -- correct, and the reason this stays an input while the
+      reusable workflow declares it a secret.
     required: true
   audience:
     description: Audience to request in the GitHub OIDC token; must equal the role's bound_audiences
