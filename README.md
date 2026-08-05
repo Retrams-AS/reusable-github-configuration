@@ -22,8 +22,10 @@ See [Releasing](#releasing) for how to find a SHA.
 | `.github/workflows/lint-and-format-node.yml`   | Reusable workflow — runs `yarn lint` and `yarn format` (ESLint + Prettier)  |
 | `.github/workflows/test-node.yml`              | Reusable workflow — runs `yarn test:unit` (Vitest)                          |
 | `.github/workflows/e2e-cypress.yml`            | Reusable workflow — runs Cypress e2e (build → preview → wait → run)         |
+| `.github/workflows/publish-python-package.yml` | Reusable workflow — bumps, builds and publishes a Python package to pypi.retrams.no |
 | `.github/actions/setup-uv`                     | Composite action — installs uv, sets up Python, runs `uv sync`              |
 | `.github/actions/setup-node-yarn`              | Composite action — Corepack + Node + `yarn install --immutable`             |
+| `.github/actions/openbao-index-token`          | Composite action — exchanges GitHub OIDC for a short-lived pypi.retrams.no token   |
 
 ## Reusable workflows
 
@@ -188,6 +190,68 @@ jobs:
       app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 ```
 
+### Publish Python package (`publish-python-package.yml`)
+
+Bumps the version from a `major`/`minor`/`patch` choice, builds with `uv`,
+publishes to `pypi.retrams.no`, commits the bump, tags it, and cuts a GitHub
+Release with the wheel and sdist attached. **CI stores no credential** — the
+job's GitHub OIDC token is exchanged with OpenBao for a JWT that expires in
+minutes. The published version is exposed as the `version` output.
+
+Publishing happens *before* the repo is written to. A failed publish leaves
+nothing to unwind; a publish that succeeds while a later step fails heals on
+re-run, because the same bump computes the same version and the upload is
+skipped as already-present.
+
+**Three things must line up, and all fail closed in ways that read as a
+permissions problem:**
+
+1. The job runs in a GitHub **Environment**, and its name forms half of the OIDC
+   subject OpenBao binds (`repo:Retrams-AS/<repo>:environment:<name>`). Default
+   `release`. Renaming it breaks publishing.
+2. The OIDC **audience** must equal the OpenBao role's `bound_audiences`
+   (`package-index`).
+3. `bao-ca` must carry the CA that issued OpenBao's listener certificate
+   (`vars.BAO_SCANNER_CA`). `bao.retrams.no` is privately issued, so a runner
+   trusting only public roots fails the TLS handshake before any auth happens.
+
+**Adding a new publishing repo is an OpenBao change, not just a workflow file.**
+The role's `bound_claims.sub` lists each permitted subject; see the platform
+runbook `openbao-package-index-auth.md` §6. Writing that role replaces it
+wholesale, so read the existing list and extend it.
+
+Uses the same **Release App** as `promote.yml` (see its one-time setup); the App
+must be installed on the publishing repo.
+
+**Usage in another repository:**
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Which part of the version to increment
+        required: true
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+permissions: {}
+
+jobs:
+  release:
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/publish-python-package.yml@<commit-sha> # <version>
+    permissions:
+      id-token: write
+      contents: read
+    with:
+      bump: ${{ inputs.bump }}
+      bao-ca: ${{ vars.BAO_SCANNER_CA }}
+    secrets:
+      app-id: ${{ secrets.RELEASE_APP_ID }}
+      app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+```
+
 ### Zizmor (`zizmor.yml`)
 
 Statically analyses GitHub Actions workflows for security problems with Zizmor.
@@ -250,6 +314,34 @@ steps:
     with:
       node-version: "20"      # optional, defaults to "20"
       enable-scripts: "false" # optional, defaults to "false"
+```
+
+### `openbao-index-token`
+
+Exchanges the job's GitHub OIDC token for a short-lived JWT accepted by
+`pypi.retrams.no`. Two calls, not one: `auth/jwt/login` returns an *opaque*
+OpenBao service token the index cannot verify, and its only job is to authorise
+`identity/oidc/token`, which mints the RS256 JWT that JWKS verification accepts.
+
+`publish-python-package.yml` uses this; consumers need the same exchange before
+`uv sync` to install from the index.
+
+```yaml
+jobs:
+  install:
+    permissions:
+      id-token: write
+    environment: release
+    steps:
+      - uses: actions/checkout@v6
+      - id: token
+        uses: Retrams-AS/reusable-github-configuration/.github/actions/openbao-index-token@<commit-sha> # <version>
+        with:
+          bao-ca: ${{ vars.BAO_SCANNER_CA }}
+      - env:
+          UV_INDEX_RETRAMS_USERNAME: __token__
+          UV_INDEX_RETRAMS_PASSWORD: ${{ steps.token.outputs.token }}
+        run: uv sync
 ```
 
 ## Releasing

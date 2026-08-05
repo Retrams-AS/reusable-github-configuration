@@ -1,0 +1,258 @@
+name: Publish Python package
+
+# Reusable: bump -> build -> publish to pypi.retrams.no -> commit -> tag ->
+# Release. CI holds no credential; identity is GitHub OIDC exchanged with
+# OpenBao (see .github/actions/openbao-index-token).
+#
+# ORDER IS LOAD-BEARING. Publishing happens BEFORE the repo is touched, so a
+# failed publish leaves nothing to unwind, and a publish that succeeds while a
+# later step fails heals on re-run: the same bump computes the same version and
+# the upload is skipped as already-present. The reverse order would leave a tag
+# on a version that does not exist and burn a number.
+#
+# Self-healing stops at the tag: once v<version> exists, a re-run recomputes the
+# same version and the tag guard refuses it, so a failure in the Release step
+# needs manual recovery (attach the distributions, or delete the tag and re-run).
+#
+# The job runs in a GitHub Environment so its OIDC subject is
+# repo:<org>/<repo>:environment:<name> -- stable across releases, unlike a tag
+# ref, which is what lets the OpenBao role bind an exact string.
+
+on:
+  workflow_call:
+    inputs:
+      bump:
+        description: Which part of the SemVer to increment
+        required: true
+        type: string
+      environment:
+        description: GitHub Environment for the publish job; its name is half of the OpenBao subject
+        type: string
+        default: release
+      publish-url:
+        type: string
+        default: https://pypi.retrams.no/upload/
+      check-url:
+        description: Simple index used to skip already-published files. Empty disables the check.
+        type: string
+        default: https://pypi.retrams.no/simple/
+      python-version:
+        type: string
+        default: "3.11"
+      bao-ca:
+        description: PEM of OpenBao's listener CA (pass ${{ vars.BAO_SCANNER_CA }})
+        required: true
+        type: string
+    outputs:
+      version:
+        description: The version that was published
+        value: ${{ jobs.publish.outputs.version }}
+    secrets:
+      app-id:
+        description: ID of the GitHub App that is a bypass actor on the default-branch ruleset.
+        required: true
+      app-private-key:
+        description: Private key (PEM) of that GitHub App.
+        required: true
+
+permissions: {}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    # Serialize releases of this repo so two dispatches cannot both bump from
+    # the same base version and race the ref update.
+    concurrency:
+      group: publish-python-${{ github.repository }}
+    permissions:
+      id-token: write # OIDC subject exchanged with OpenBao for the index token
+      contents: read # clone the private repo and read refs with github.token; every
+      # write to the repo (commit, tag, Release) uses the App token instead
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+    steps:
+      - name: Checkout the caller
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # `./` in a called workflow resolves against the CALLER's checkout, which
+      # has none of these actions. Fetch them from the repo this file lives in,
+      # at the exact ref the caller pinned.
+      - name: Checkout shared actions at the called ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: ._shared
+          persist-credentials: false
+
+      - uses: ./._shared/.github/actions/setup-uv
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Bump the version
+        id: bump
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          case "$BUMP" in
+            major|minor|patch) ;;
+            *) echo "::error::bump must be major, minor or patch, got '$BUMP'."; exit 1 ;;
+          esac
+          # Both files are committed as one tree later; if either is missing the
+          # commit would write an empty blob and desync them. Fail here, before
+          # anything is published, where failing costs nothing.
+          [ -f pyproject.toml ] && [ -s uv.lock ] || {
+            echo "::error::pyproject.toml and uv.lock must both exist and be non-empty."; exit 1
+          }
+          # Rewrites pyproject.toml AND re-locks, so uv.lock's own entry moves too.
+          version=$(uv version --bump "$BUMP" --short)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Publishing \`$version\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Refuse if the tag already exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.bump.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Only a genuine 404 means "free". Swallowing every failure would read
+          # a 403 or an outage as absence and let the release proceed.
+          if out=$(gh api "repos/${REPO}/git/ref/tags/v${VERSION}" 2>&1); then
+            echo "::error::Tag v${VERSION} already exists. A previous release minted this version."
+            exit 1
+          elif ! grep -q 'Not Found' <<<"$out"; then
+            echo "::error::Could not determine whether tag v${VERSION} exists: $out"
+            exit 1
+          fi
+
+      - name: Build
+        run: uv build
+
+      # Cheap guard: if the branch moved while we were building, abort now --
+      # nothing has been published, so there is nothing to reconcile. Publishing
+      # anyway would tag a commit whose code is not what shipped.
+      - name: Refuse if the default branch moved
+        id: tip
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          tip=$(gh api "repos/${REPO}/git/ref/heads/${DEFAULT_BRANCH}" --jq .object.sha)
+          if [ "$tip" != "$GITHUB_SHA" ]; then
+            echo "::error::${DEFAULT_BRANCH} moved from ${GITHUB_SHA} to ${tip} during the build. Nothing was published; re-run."
+            exit 1
+          fi
+          echo "tip=$tip" >> "$GITHUB_OUTPUT"
+
+      - name: Mint the index token
+        id: index-token
+        uses: ./._shared/.github/actions/openbao-index-token
+        with:
+          bao-ca: ${{ inputs.bao-ca }}
+
+      - name: Publish
+        env:
+          # __token__ is implied as the username, and the credential goes on the
+          # wire as HTTP Basic -- the PyPI convention the index accepts.
+          UV_PUBLISH_TOKEN: ${{ steps.index-token.outputs.token }}
+          UV_PUBLISH_URL: ${{ inputs.publish-url }}
+          CHECK_URL: ${{ inputs.check-url }}
+        run: |
+          set -euo pipefail
+          shopt -s failglob # an empty dist/ must not pass the literal 'dist/*' through
+          if [ -n "$CHECK_URL" ]; then
+            uv publish --check-url "$CHECK_URL" dist/*
+          else
+            uv publish dist/*
+          fi
+
+      # Token scoped to the minimum (contents write). The App is an intentional
+      # ruleset bypass actor (see issue #9) -- deliberate, not a misconfiguration.
+      #
+      # No `zizmor: ignore[github-app]` here, unlike promote.yml and
+      # fast-forward.yml: measured 2026-08-04 against zizmor 1.29.0, that audit
+      # does not exist. Ignore names are not validated, so it suppressed nothing
+      # -- while occupying the one comment slot on this line, which made the
+      # real `ref-version-mismatch` audit fire for a missing version comment.
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.app-id }}
+          private-key: ${{ secrets.app-private-key }}
+          permission-contents: write
+
+      # One commit for two files. The Contents API takes one file per call, so
+      # two calls would be two commits and could half-apply, leaving the lockfile
+      # out of sync with the manifest on the default branch.
+      - name: Commit the bump and tag it
+        id: commit
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          VERSION: ${{ steps.bump.outputs.version }}
+          BASE: ${{ steps.tip.outputs.tip }}
+        run: |
+          set -euo pipefail
+
+          base_tree=$(gh api "repos/${REPO}/git/commits/${BASE}" --jq .tree.sha)
+
+          # base64 must be its own command: as an argument its failure would be
+          # discarded and gh would happily post content="" -- a valid empty blob.
+          mk_blob() {
+            local content
+            content=$(base64 -w0 "$1") || exit 1
+            gh api --method POST "repos/${REPO}/git/blobs" \
+              -f content="$content" -f encoding=base64 --jq .sha
+          }
+          pyproject_blob=$(mk_blob pyproject.toml)
+          lock_blob=$(mk_blob uv.lock)
+
+          # gh's -f flag cannot express an array of OBJECTS (tree[][path]=...
+          # silently produces the wrong shape), so build the JSON and pipe it.
+          tree=$(jq -nc \
+                  --arg base "$base_tree" --arg py "$pyproject_blob" --arg lk "$lock_blob" \
+                  '{base_tree:$base, tree:[
+                     {path:"pyproject.toml", mode:"100644", type:"blob", sha:$py},
+                     {path:"uv.lock",        mode:"100644", type:"blob", sha:$lk}]}' \
+                | gh api --method POST "repos/${REPO}/git/trees" --input - --jq .sha)
+
+          # [skip ci]: App-token commits DO trigger workflows, unlike
+          # GITHUB_TOKEN ones, and a version bump has nothing for CI to check.
+          commit=$(gh api --method POST "repos/${REPO}/git/commits" \
+            -f message="release: v${VERSION} [skip ci]" \
+            -f tree="$tree" -f "parents[]=${BASE}" --jq .sha)
+
+          # force=false: if anything landed while we were publishing, this is
+          # refused rather than dropping that commit. The package IS published;
+          # re-running reconciles (the upload is skipped as already-present).
+          gh api --method PATCH "repos/${REPO}/git/refs/heads/${DEFAULT_BRANCH}" \
+            -f sha="$commit" -F force=false
+
+          gh api --method POST "repos/${REPO}/git/refs" \
+            -f ref="refs/tags/v${VERSION}" -f sha="$commit" >/dev/null
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Cut the Release with the distributions attached
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          VERSION: ${{ steps.bump.outputs.version }}
+          COMMIT: ${{ steps.commit.outputs.commit }}
+        run: |
+          set -euo pipefail
+          # failglob: an empty dist/ must fail here rather than uploading the
+          # literal 'dist/*'. The tag already exists at this point, so this is
+          # the one failure the workflow cannot heal by re-running.
+          shopt -s failglob
+          # --target is inert (the tag exists already); belt-and-braces so the
+          # Release can never attach itself to a different commit.
+          gh release create "v${VERSION}" --title "v${VERSION}" \
+            --target "$COMMIT" --generate-notes dist/*
