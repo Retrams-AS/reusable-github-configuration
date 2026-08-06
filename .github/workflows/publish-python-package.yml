@@ -156,6 +156,10 @@ jobs:
         uses: ./._shared/.github/actions/openbao-index-token
         with:
           bao-ca: ${{ inputs.bao-ca }}
+          # Named explicitly: the action defaults to the read-only pair, and a
+          # read token fails at upload rather than at parse time.
+          jwt-role: package-index-ci
+          identity-role: package-index-publish
 
       - name: Publish
         env:

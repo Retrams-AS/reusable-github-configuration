@@ -3,9 +3,10 @@ description: >-
   Exchanges this job's GitHub OIDC token for a short-lived JWT that
   pypi.retrams.no accepts. CI stores no credential: the OIDC token is minted
   per-run by GitHub, and the JWT it buys expires in minutes. Requires
-  `permissions: id-token: write` on the calling job, and — because the job runs
-  in a GitHub Environment — that the Environment's name matches the subject the
-  OpenBao role binds.
+  `permissions: id-token: write` on the calling job. Defaults mint a read-only
+  token; publishing overrides `jwt-role` and `identity-role`, and its OpenBao
+  role additionally requires the job to run in a GitHub Environment named
+  `release`.
 
 inputs:
   bao-addr:
@@ -22,15 +23,31 @@ inputs:
     default: "package-index"
   jwt-role:
     description: OpenBao JWT auth role
-    default: "package-index-ci"
+    default: "package-index-ci-read"
   identity-role:
     description: OpenBao identity/oidc role that mints the JWT the index verifies
-    default: "package-index-publish"
+    default: "package-index-read"
+  uv-index-name:
+    description: >-
+      Name of the `[[tool.uv.index]]` entry to authenticate. When set, the matching
+      UV_INDEX_<NAME>_USERNAME and UV_INDEX_<NAME>_PASSWORD are exported to the job
+      environment for every later step. Empty leaves the environment untouched.
+    default: ""
+  netrc-file:
+    description: >-
+      Path to write a netrc for the index, mode 600. Empty writes no file.
+      Must be a literal absolute path: it is used quoted, so `~` and `$HOME`
+      are not expanded. This action has no post step, so the file is never
+      cleaned up and persists until the job ends.
+    default: ""
 
 outputs:
   token:
     description: Short-lived RS256 JWT for the index (masked in logs)
     value: ${{ steps.exchange.outputs.token }}
+  netrc-file:
+    description: Path of the netrc that was written, or empty if none was requested
+    value: ${{ steps.exchange.outputs.netrc-file }}
 
 runs:
   using: "composite"
@@ -44,8 +61,17 @@ runs:
         AUDIENCE: ${{ inputs.audience }}
         JWT_ROLE: ${{ inputs.jwt-role }}
         IDENTITY_ROLE: ${{ inputs.identity-role }}
+        UV_INDEX_NAME: ${{ inputs.uv-index-name }}
+        NETRC_FILE: ${{ inputs.netrc-file }}
       run: |
         set -euo pipefail
+
+        # An empty PEM produces a TLS handshake failure several steps later that
+        # reads like an OpenBao outage. Fail here, naming the real cause.
+        if [ -z "${BAO_CA//[[:space:]]/}" ]; then
+          echo "::error::bao-ca is empty. The OpenBao listener certificate is privately issued, so its CA must be supplied."
+          exit 1
+        fi
 
         ca=$(mktemp)
         trap 'rm -f "$ca"' EXIT
@@ -61,6 +87,13 @@ runs:
           -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
           "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" | jq -r .value)
         [ -n "$oidc" ] && [ "$oidc" != "null" ] || { echo "::error::GitHub OIDC token request returned no value"; exit 1; }
+        # A GitHub OIDC token is a JWT: base64url segments joined by dots. The
+        # guard must run before ::add-mask:: -- that workflow command is
+        # line-oriented, so a value with an embedded newline only masks its
+        # first line and prints the rest as plain job-log output.
+        case "$oidc" in
+          *[!A-Za-z0-9._-]*) echo "::error::GitHub OIDC token request returned a value that is not a JWT."; exit 1 ;;
+        esac
         echo "::add-mask::$oidc"
 
         # auth/jwt/login proves who we are and returns an OPAQUE service token.
@@ -70,6 +103,15 @@ runs:
           -d "$(jq -nc --arg r "$JWT_ROLE" --arg j "$oidc" '{role:$r,jwt:$j}')" \
           | jq -r .auth.client_token)
         [ -n "$svc" ] && [ "$svc" != "null" ] || { echo "::error::auth/jwt/login returned no client token"; exit 1; }
+        # Deliberately the same permissive class as the JWTs, not a tighter one
+        # matched to the "hvs." token format. The guard exists to stop a newline
+        # reaching a line-oriented sink, not to validate the token's shape --
+        # and a class that assumed the payload's exact alphabet would reject a
+        # legitimate token and break publishing, a failure only production shows.
+        # Guard before ::add-mask:: for the same line-oriented reason as above.
+        case "$svc" in
+          *[!A-Za-z0-9._-]*) echo "::error::auth/jwt/login returned a malformed client token."; exit 1 ;;
+        esac
         echo "::add-mask::$svc"
 
         # identity/oidc mints the RS256 JWT the index actually verifies against JWKS.
@@ -78,6 +120,49 @@ runs:
           "${BAO_ADDR}/v1/identity/oidc/token/${IDENTITY_ROLE}" \
           | jq -r .data.token)
         [ -n "$token" ] && [ "$token" != "null" ] || { echo "::error::identity/oidc/token returned no token"; exit 1; }
+
+        # A JWT is base64url segments joined by dots. Anything else would be
+        # written verbatim into $GITHUB_ENV, $GITHUB_OUTPUT and the netrc, where
+        # a newline injects environment variables or an extra netrc machine line.
+        # Guard before ::add-mask:: so a rejected value is neither masked nor
+        # echoed -- ::add-mask:: is line-oriented and would otherwise leak every
+        # line past the first as plain job-log output before the rejection.
+        case "$token" in
+          *[!A-Za-z0-9._-]*) echo "::error::identity/oidc/token returned a value that is not a JWT"; exit 1 ;;
+        esac
         echo "::add-mask::$token"
 
         echo "token=$token" >> "$GITHUB_OUTPUT"
+
+        # Anything written here lands in the job environment verbatim, so a name
+        # carrying a newline could inject arbitrary variables. (The token is
+        # validated as a JWT above, so it is safe unquoted here.)
+        if [ -n "$UV_INDEX_NAME" ]; then
+          case "$UV_INDEX_NAME" in
+            *[!A-Za-z0-9_-]*)
+              echo "::error::uv-index-name must match [A-Za-z0-9_-]+."
+              exit 1 ;;
+          esac
+          var=$(printf '%s' "$UV_INDEX_NAME" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
+          {
+            echo "UV_INDEX_${var}_USERNAME=__token__"
+            echo "UV_INDEX_${var}_PASSWORD=$token"
+          } >> "$GITHUB_ENV"
+        fi
+
+        if [ -n "$NETRC_FILE" ]; then
+          case "$NETRC_FILE" in
+            *$'\n'*|*$'\r'*)
+              echo "::error::netrc-file must not contain a newline or carriage return."
+              exit 1 ;;
+          esac
+          # umask in a subshell so a freshly created file is never briefly
+          # world-readable, and so the job's umask is unchanged afterwards.
+          # umask only governs creation mode, so a pre-existing file (mode
+          # untouched by a truncating write) is deleted first to force
+          # re-creation under the subshell's umask.
+          ( umask 077
+            rm -f "$NETRC_FILE"
+            printf 'machine pypi.retrams.no\nlogin __token__\npassword %s\n' "$token" > "$NETRC_FILE" )
+          echo "netrc-file=$NETRC_FILE" >> "$GITHUB_OUTPUT"
+        fi
