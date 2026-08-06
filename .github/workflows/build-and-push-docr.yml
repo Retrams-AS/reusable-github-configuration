@@ -9,6 +9,24 @@ name: Build and push image to DOCR
 # If the Dockerfile PULLS a private image (e.g. a prebuilt base), pass
 # registry_login: true so build-only runs authenticate too — otherwise they
 # fail on an unauthorized pull.
+#
+# With `private-index: true` the build receives a `netrc` BuildKit secret. The
+# Dockerfile must consume it on the layer that installs dependencies:
+#
+#   RUN --mount=type=secret,id=netrc,target=/tmp/netrc \
+#       NETRC=/tmp/netrc uv sync --frozen --no-dev
+#
+# The same line works locally with
+# `docker build --secret id=netrc,src=$HOME/.netrc .`. The caller must also grant
+# `id-token: write`, since a called workflow's permissions are capped by its caller's.
+#
+# The token is minted once, immediately before the build, and lives 15 minutes.
+# That budget is spent by every layer preceding `uv sync`, so keep the dependency
+# install early — ahead of any `apt-get` or full source copy. The longest build in
+# the fleet is ~5 minutes today, so this is headroom to preserve, not a live
+# problem. The case to watch is `platforms` extended beyond linux/amd64: QEMU
+# emulation can push a cold `uv sync` past the window, and the failure reads like
+# an index outage rather than an expired token. Re-running mints a fresh one.
 
 on:
   workflow_call:
@@ -39,6 +57,14 @@ on:
         description: Path to the Dockerfile, relative to the repository root (NOT to `context`)
         type: string
         default: Dockerfile
+      private-index:
+        description: Authenticate to pypi.retrams.no and expose it to the build as a `netrc` BuildKit secret
+        type: boolean
+        default: false
+      bao-ca:
+        description: PEM of the CA that issued OpenBao's listener certificate
+        type: string
+        default: ""
     secrets:
       DO_ACCESS_KEY:
         description: DigitalOcean API token with registry scope (required when push or registry_login is true)
@@ -50,7 +76,23 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
+      # contents: read is not optional. Declaring a permissions block at all
+      # replaces the default token outright, so it must stay explicit here or
+      # checkout breaks even though we're only adding id-token below.
       contents: read
+      # Exchanged with OpenBao for the index token, but only when private-index
+      # is true. Granted unconditionally because permissions are static per job:
+      # there is no way to scope this to the runs that use it without a second
+      # job, and a second job cannot hand credentials over -- the whole design
+      # rests on the mint step's netrc file being handed to a later step in this
+      # same job. Accepted: this makes ACTIONS_ID_TOKEN_REQUEST_* readable by
+      # every step, including docr-login and the docker build-push-action
+      # invocation. The exposure is bounded by what the token can buy -- the
+      # OpenBao role behind the action's defaults is read-only and binds
+      # repository_owner, so it grants no more than any org developer already
+      # has -- and the OIDC token itself never crosses into the build: only the
+      # resulting netrc does, as a BuildKit secret.
+      id-token: write # OIDC subject exchanged with OpenBao, only when private-index
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -65,10 +107,11 @@ jobs:
       # workflow's own repo at the called ref and referenced by local path
       # (./...) — which zizmor's unpinned-uses policy doesn't apply to, so no
       # inlining is needed (mirrors setup-uv in lint-and-format-python.yml).
-      # Gated identically to the login step below: skipping this checkout while
-      # logging in would fail on a missing ./._shared path.
+      # Gated identically to the login step below, plus private-index: the
+      # index-token mint step is also referenced by local path, so skipping
+      # this checkout while it runs would fail on a missing ./._shared path.
       - name: Checkout shared actions at the called ref
-        if: inputs.push || inputs.registry_login
+        if: inputs.push || inputs.registry_login || inputs.private-index
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: ${{ job.workflow_repository }}
@@ -85,6 +128,17 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
+      # The token lives 15 minutes; docr-login and buildx setup above do real
+      # work, so neither belongs inside that window. Mint it last, right
+      # before the step that spends it.
+      - name: Mint the index token
+        id: index-token
+        if: inputs.private-index
+        uses: ./._shared/.github/actions/openbao-index-token
+        with:
+          bao-ca: ${{ inputs.bao-ca }}
+          netrc-file: ${{ runner.temp }}/netrc
+
       - name: Build image
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
@@ -95,3 +149,7 @@ jobs:
           tags: ${{ inputs.image }}:${{ steps.sha.outputs.sha7 }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # secret-files, not secrets: the `secrets` input is a CSV-ish KEY=VALUE
+          # list and a three-line netrc breaks its parsing at build time. Empty
+          # when the mint step was skipped, which build-push-action ignores.
+          secret-files: ${{ steps.index-token.outputs.netrc-file && format('netrc={0}', steps.index-token.outputs.netrc-file) || '' }}
