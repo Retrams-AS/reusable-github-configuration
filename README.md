@@ -18,6 +18,7 @@ See [Releasing](#releasing) for how to find a SHA.
 | ---------------------------------------------- | --------------------------------------------------------------------------- |
 | `.github/workflows/lint-and-format-python.yml` | Reusable workflow — runs `ruff check` and `ruff format --check` via uv      |
 | `.github/workflows/zizmor.yml`                 | Reusable workflow — scans your Actions YAML for security issues with Zizmor |
+| `.github/workflows/actionlint.yml`             | Reusable workflow — lints Actions YAML for correctness (actionlint + shellcheck)   |
 | `.github/workflows/pr-title-check.yml`         | Reusable workflow — checks each PR title is a valid Conventional Commit     |
 | `.github/workflows/lint-and-format-node.yml`   | Reusable workflow — runs `yarn lint` and `yarn format` (ESLint + Prettier)  |
 | `.github/workflows/test-node.yml`              | Reusable workflow — runs `yarn test:unit` (Vitest)                          |
@@ -259,6 +260,27 @@ Statically analyses GitHub Actions workflows for security problems with Zizmor.
 Don't copy this workflow into every repo. It is enforced org-wide. One copy to maintain; Rulesets govern the rest.
 
 **If we upgrade to GitHub Advanced Security, we need to update and extend the workflow to upload results to security overview.**
+
+### actionlint (`actionlint.yml`)
+
+Correctness linting for Actions YAML — undefined contexts, malformed expressions,
+bad `needs:` references, and shellcheck findings inside `run:` blocks. The security
+counterpart is `zizmor.yml`. Runs on this repo's own pushes and PRs; callable from
+another repo with `uses:`.
+
+Locally:
+
+```bash
+uvx --from actionlint-py==1.7.12.24 --with shellcheck-py==0.11.0.1 actionlint -ignore 'property "workflow_(repository|sha)" is not defined'
+```
+
+The `-ignore` is required: actionlint does not model the `job` context, so the
+`._shared` self-checkout pattern reports a false "property not defined".
+
+Both versions are pinned and CI runs this exact command. actionlint shells out to
+whatever `shellcheck` it finds on `PATH` to lint `run:` blocks, and GitHub runners
+ship their own — so without the pin, CI lints against a different shellcheck than
+you have locally and fails on findings you cannot reproduce.
 
 ### PR title check (`pr-title-check.yml`)
 
