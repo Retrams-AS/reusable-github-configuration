@@ -40,7 +40,7 @@ on:
         type: string
         default: "3.11"
       bao-ca:
-        description: PEM of OpenBao's listener CA (pass ${{ vars.BAO_SCANNER_CA }})
+        description: PEM of the CA that issued OpenBao's listener certificate
         required: true
         type: string
     outputs:
