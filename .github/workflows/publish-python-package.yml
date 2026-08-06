@@ -205,13 +205,10 @@ jobs:
 
           base_tree=$(gh api "repos/${REPO}/git/commits/${BASE}" --jq .tree.sha)
 
-          # base64 must be its own command: as an argument its failure would be
-          # discarded and gh would happily post content="" -- a valid empty blob.
           mk_blob() {
-            local content
-            content=$(base64 -w0 "$1") || exit 1
-            gh api --method POST "repos/${REPO}/git/blobs" \
-              -f content="$content" -f encoding=base64 --jq .sha
+            base64 -w0 "$1" \
+              | jq -Rsc '{content: ., encoding: "base64"}' \
+              | gh api --method POST "repos/${REPO}/git/blobs" --input - --jq .sha
           }
           pyproject_blob=$(mk_blob pyproject.toml)
           lock_blob=$(mk_blob uv.lock)
