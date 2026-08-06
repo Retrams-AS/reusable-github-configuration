@@ -36,9 +36,10 @@ inputs:
   netrc-file:
     description: >-
       Path to write a netrc for the index, mode 600. Empty writes no file.
-      Must be a literal absolute path: it is used quoted, so `~` and `$HOME`
-      are not expanded. This action has no post step, so the file is never
-      cleaned up and persists until the job ends.
+      The value is used quoted, so `~` and `$HOME` are never expanded -- a
+      relative path resolves against the workspace instead. This action has
+      no post step, so the file is never cleaned up and persists until the
+      job ends.
     default: ""
 
 outputs:
@@ -124,9 +125,7 @@ runs:
         # A JWT is base64url segments joined by dots. Anything else would be
         # written verbatim into $GITHUB_ENV, $GITHUB_OUTPUT and the netrc, where
         # a newline injects environment variables or an extra netrc machine line.
-        # Guard before ::add-mask:: so a rejected value is neither masked nor
-        # echoed -- ::add-mask:: is line-oriented and would otherwise leak every
-        # line past the first as plain job-log output before the rejection.
+        # Guard before ::add-mask:: for the same line-oriented reason as above.
         case "$token" in
           *[!A-Za-z0-9._-]*) echo "::error::identity/oidc/token returned a value that is not a JWT"; exit 1 ;;
         esac

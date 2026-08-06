@@ -2,8 +2,9 @@ name: actionlint
 
 # Correctness counterpart to zizmor.yml, which audits Actions *security*. actionlint
 # catches the class zizmor does not: undefined contexts, malformed expressions, bad
-# `needs:` references, and — via shellcheck, which GitHub runners preinstall —
-# findings inside `run:` blocks.
+# `needs:` references, and — via shellcheck, pinned with `--with shellcheck-py` in
+# both steps below rather than left to the runner's preinstalled copy — findings
+# inside `run:` blocks.
 
 on:
   workflow_call:

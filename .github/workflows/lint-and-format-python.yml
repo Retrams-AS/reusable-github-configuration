@@ -2,10 +2,10 @@ name: Lint and format
 
 # Reusable: ruff check + ruff format --check via uv.
 #
-# With `private-index: true` the job exchanges its GitHub OIDC token for a
-# short-lived pypi.retrams.no credential before installing. A reusable workflow's
-# permissions are capped by its caller's, so the CALLING workflow must also grant
-# `id-token: write` — otherwise the mint step fails at run time, not at parse time.
+# This job declares `id-token: write` unconditionally (see below), so the
+# CALLING workflow must also grant it -- for every caller, whether or not
+# private-index is used. A caller that doesn't gets rejected at workflow
+# validation (`startup_failure`, zero jobs), before any step runs.
 
 on:
   workflow_call:
@@ -15,13 +15,18 @@ on:
         type: string
         default: "3.10"
       private-index:
-        description: Authenticate to pypi.retrams.no before installing dependencies
+        description: >-
+          Authenticate to pypi.retrams.no before installing dependencies. Also
+          requires a matching pyproject.toml entry for the package; without
+          one, resolution silently falls through to public PyPI.
         type: boolean
         default: false
       bao-ca:
         description: PEM of the CA that issued OpenBao's listener certificate
         type: string
         default: ""
+
+permissions: {}
 
 jobs:
   ruff:
@@ -62,6 +67,10 @@ jobs:
           path: ._shared
           persist-credentials: false
 
+      # Mints before setup-uv, not after: uv-index-name needs the UV_INDEX_*
+      # env vars in place before `uv sync` runs. That's the reverse of the
+      # ordering build-and-push-docr.yml's comment argues for, but it's forced
+      # here and costs seconds, not a disagreement between the two files.
       - name: Mint the index token
         if: inputs.private-index
         uses: ./._shared/.github/actions/openbao-index-token

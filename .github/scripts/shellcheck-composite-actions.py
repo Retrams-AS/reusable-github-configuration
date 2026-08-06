@@ -1,7 +1,9 @@
 """Shellcheck every bash `run:` block in this repo's composite actions.
 
 actionlint does not read action.yml at all, so without this the composite
-actions — including the OpenBao token exchange — are never linted.
+actions — including the OpenBao token exchange — are never linted. shellcheck
+is pinned via `--with shellcheck-py` here, matching actionlint.yml's own
+invocation, so this script and CI check the same shellcheck version.
 
 Run: uv run --no-project --with pyyaml --with shellcheck-py python .github/scripts/shellcheck-composite-actions.py
 """
@@ -15,7 +17,9 @@ import yaml
 failed = 0
 actions_found = 0
 steps_checked = 0
-for path in sorted(pathlib.Path(".github/actions").glob("*/action.yml")):
+action_files = pathlib.Path(".github/actions").glob("*/action.yml")
+action_files = list(action_files) + list(pathlib.Path(".github/actions").glob("*/action.yaml"))
+for path in sorted(action_files):
     actions_found += 1
     doc = yaml.safe_load(path.read_text())
     if not isinstance(doc, dict):

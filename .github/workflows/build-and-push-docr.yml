@@ -11,14 +11,20 @@ name: Build and push image to DOCR
 # fail on an unauthorized pull.
 #
 # With `private-index: true` the build receives a `netrc` BuildKit secret. The
-# Dockerfile must consume it on the layer that installs dependencies:
+# Dockerfile must consume it on the layer that installs dependencies, before
+# any `USER` switch to non-root -- the secret is mounted uid 0, mode 0400, so
+# installing as a later non-root user gets a permission error that reads like
+# an auth failure. Install before the `USER` switch, or pass `uid=` on the
+# mount if that's not possible:
 #
 #   RUN --mount=type=secret,id=netrc,target=/tmp/netrc \
 #       NETRC=/tmp/netrc uv sync --frozen --no-dev
 #
 # The same line works locally with
-# `docker build --secret id=netrc,src=$HOME/.netrc .`. The caller must also grant
-# `id-token: write`, since a called workflow's permissions are capped by its caller's.
+# `docker build --secret id=netrc,src=$HOME/.netrc .`. The caller must also
+# grant `id-token: write` -- for every caller, whether or not private-index is
+# used, since this job declares it unconditionally. Missing it fails the run
+# at workflow validation (`startup_failure`, zero jobs), not partway through.
 #
 # The token is minted once, immediately before the build, and lives 15 minutes.
 # That budget is spent by every layer preceding `uv sync`, so keep the dependency
@@ -58,7 +64,11 @@ on:
         type: string
         default: Dockerfile
       private-index:
-        description: Authenticate to pypi.retrams.no and expose it to the build as a `netrc` BuildKit secret
+        description: >-
+          Authenticate to pypi.retrams.no and expose it to the build as a
+          `netrc` BuildKit secret. Also requires a matching pyproject.toml
+          entry for the package; without one, resolution silently falls
+          through to public PyPI.
         type: boolean
         default: false
       bao-ca:

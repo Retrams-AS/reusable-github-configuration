@@ -44,14 +44,11 @@ jobs:
       private-index: true    # optional, defaults to false — authenticate to pypi.retrams.no
       bao-ca: ${{ vars.BAO_SCANNER_CA }} # required when private-index is true
     permissions:
-      id-token: write # required when private-index is true; a called workflow's
-                      # permissions are capped by the caller's
-      contents: read  # also required: see note below
+      contents: read
+      id-token: write
 ```
 
-Both are needed together because a `permissions:` block replaces the job's default
-token wholesale rather than adding to it — granting only `id-token: write` here also
-sets `contents: none`, and the called workflow's own checkout then fails.
+Both scopes are required, whether or not `private-index` is set.
 
 ### Lint and format — Node (`lint-and-format-node.yml`)
 
@@ -126,14 +123,15 @@ jobs:
       private-index: true    # optional, defaults to false
       bao-ca: ${{ vars.BAO_SCANNER_CA }} # required when private-index is true
     permissions:
-      id-token: write # required when private-index is true
-      contents: read  # also required — see the note under the Lint example above
+      contents: read
+      id-token: write
     secrets:
       DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
 ```
 
 With `private-index: true` the build gets a `netrc` BuildKit secret. Consume it on the
-dependency-install layer:
+dependency-install layer. The secret mounts as uid 0, mode 0400, so that layer must run
+before any switch to a non-root `USER`, or the mount needs `uid=`:
 
 ```dockerfile
 RUN --mount=type=secret,id=netrc,target=/tmp/netrc \
@@ -303,10 +301,7 @@ uvx --from actionlint-py==1.7.12.24 --with shellcheck-py==0.11.0.1 actionlint -i
 The `-ignore` is required: actionlint does not model the `job` context, so the
 `._shared` self-checkout pattern reports a false "property not defined".
 
-Both versions are pinned and CI runs this exact command. actionlint shells out to
-whatever `shellcheck` it finds on `PATH` to lint `run:` blocks, and GitHub runners
-ship their own — so without the pin, CI lints against a different shellcheck than
-you have locally and fails on findings you cannot reproduce.
+CI runs this exact command, shellcheck pin included.
 
 ### PR title check (`pr-title-check.yml`)
 
