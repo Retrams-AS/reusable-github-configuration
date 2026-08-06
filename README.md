@@ -18,6 +18,7 @@ See [Releasing](#releasing) for how to find a SHA.
 | ---------------------------------------------- | --------------------------------------------------------------------------- |
 | `.github/workflows/lint-and-format-python.yml` | Reusable workflow — runs `ruff check` and `ruff format --check` via uv      |
 | `.github/workflows/zizmor.yml`                 | Reusable workflow — scans your Actions YAML for security issues with Zizmor |
+| `.github/workflows/actionlint.yml`             | Reusable workflow — lints Actions YAML for correctness (actionlint + shellcheck) |
 | `.github/workflows/pr-title-check.yml`         | Reusable workflow — checks each PR title is a valid Conventional Commit     |
 | `.github/workflows/lint-and-format-node.yml`   | Reusable workflow — runs `yarn lint` and `yarn format` (ESLint + Prettier)  |
 | `.github/workflows/test-node.yml`              | Reusable workflow — runs `yarn test:unit` (Vitest)                          |
@@ -25,7 +26,7 @@ See [Releasing](#releasing) for how to find a SHA.
 | `.github/workflows/publish-python-package.yml` | Reusable workflow — bumps, builds and publishes a Python package to pypi.retrams.no |
 | `.github/actions/setup-uv`                     | Composite action — installs uv, sets up Python, runs `uv sync`              |
 | `.github/actions/setup-node-yarn`              | Composite action — Corepack + Node + `yarn install --immutable`             |
-| `.github/actions/openbao-index-token`          | Composite action — exchanges GitHub OIDC for a short-lived pypi.retrams.no token   |
+| `.github/actions/openbao-index-token`          | Composite action — exchanges GitHub OIDC for a short-lived pypi.retrams.no token, as an output, `UV_INDEX_*` env vars, or a netrc |
 
 ## Reusable workflows
 
@@ -40,7 +41,14 @@ jobs:
     uses: Retrams-AS/reusable-github-configuration/.github/workflows/lint-and-format-python.yml@<commit-sha> # <calver>
     with:
       python-version: "3.12" # optional, defaults to "3.10"
+      private-index: true    # optional, defaults to false — authenticate to pypi.retrams.no
+      bao-ca: ${{ vars.BAO_SCANNER_CA }} # required when private-index is true
+    permissions:
+      contents: read
+      id-token: write
 ```
+
+Both scopes are required, whether or not `private-index` is set.
 
 ### Lint and format — Node (`lint-and-format-node.yml`)
 
@@ -112,9 +120,26 @@ jobs:
     with:
       image: registry.digitalocean.com/the-retrams-registry/<service>
       push: ${{ github.event_name != 'pull_request' }}
+      private-index: true    # optional, defaults to false
+      bao-ca: ${{ vars.BAO_SCANNER_CA }} # required when private-index is true
+    permissions:
+      contents: read
+      id-token: write
     secrets:
       DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
 ```
+
+With `private-index: true` the build gets a `netrc` BuildKit secret. Consume it on the
+dependency-install layer. The secret mounts as uid 0, mode 0400, so that layer must run
+before any switch to a non-root `USER`, or the mount needs `uid=`:
+
+```dockerfile
+RUN --mount=type=secret,id=netrc,target=/tmp/netrc \
+    NETRC=/tmp/netrc uv sync --frozen --no-dev
+```
+
+The identical line builds locally with
+`docker build --secret id=netrc,src=$HOME/.netrc .`.
 
 ### Release (CalVer) (`release_calver.yml`)
 
@@ -260,6 +285,24 @@ Don't copy this workflow into every repo. It is enforced org-wide. One copy to m
 
 **If we upgrade to GitHub Advanced Security, we need to update and extend the workflow to upload results to security overview.**
 
+### actionlint (`actionlint.yml`)
+
+Correctness linting for Actions YAML — undefined contexts, malformed expressions,
+bad `needs:` references, and shellcheck findings inside `run:` blocks. The security
+counterpart is `zizmor.yml`. Runs on this repo's own pushes and PRs; callable from
+another repo with `uses:`.
+
+Locally:
+
+```bash
+uvx --from actionlint-py==1.7.12.24 --with shellcheck-py==0.11.0.1 actionlint -ignore 'property "workflow_(repository|sha)" is not defined'
+```
+
+The `-ignore` is required: actionlint does not model the `job` context, so the
+`._shared` self-checkout pattern reports a false "property not defined".
+
+CI runs this exact command, shellcheck pin included.
+
 ### PR title check (`pr-title-check.yml`)
 
 Fails any PR whose title isn't a valid
@@ -301,6 +344,10 @@ steps:
       python-version: "3.12" # optional, defaults to "3.10"
 ```
 
+This action knows nothing about the private index. To install first-party wheels, run
+`openbao-index-token` with `uv-index-name` **before** it — the credentials arrive
+through the job environment.
+
 ### `setup-node-yarn`
 
 Enables Corepack, sets up Node with the Yarn cache, and runs
@@ -323,26 +370,43 @@ Exchanges the job's GitHub OIDC token for a short-lived JWT accepted by
 OpenBao service token the index cannot verify, and its only job is to authorise
 `identity/oidc/token`, which mints the RS256 JWT that JWKS verification accepts.
 
-`publish-python-package.yml` uses this; consumers need the same exchange before
-`uv sync` to install from the index.
+`publish-python-package.yml` uses this for the publish path. For reads, set
+`uv-index-name` and the action exports the credentials uv looks for, so `setup-uv`
+and any later `uv` command pick them up with no further wiring:
 
 ```yaml
 jobs:
   install:
     permissions:
       id-token: write
-    environment: release
+      contents: read # also required — see the note under the Lint example above
     steps:
       - uses: actions/checkout@v6
-      - id: token
-        uses: Retrams-AS/reusable-github-configuration/.github/actions/openbao-index-token@<commit-sha> # <version>
+      - uses: Retrams-AS/reusable-github-configuration/.github/actions/openbao-index-token@<commit-sha> # <version>
         with:
           bao-ca: ${{ vars.BAO_SCANNER_CA }}
-      - env:
-          UV_INDEX_RETRAMS_USERNAME: __token__
-          UV_INDEX_RETRAMS_PASSWORD: ${{ steps.token.outputs.token }}
-        run: uv sync
+          uv-index-name: retrams
+      - uses: Retrams-AS/reusable-github-configuration/.github/actions/setup-uv@<commit-sha> # <version>
 ```
+
+Defaults mint a **read-only** token. Publishing overrides `jwt-role` and
+`identity-role`, and its OpenBao role additionally requires the job to run in a GitHub
+Environment named `release`. For a Docker build, set `netrc-file` instead of
+`uv-index-name` and pass the resulting path to BuildKit as a `netrc` secret. Point
+`netrc-file` at a file *under* `${{ runner.temp }}`, e.g. `${{ runner.temp }}/netrc` —
+not a path inside the workspace: this is a composite action, so it cannot declare a
+`post:` step to clean the file up, and it persists until the job ends — long enough
+for a workspace path to be swept into an artifact upload.
+
+Setting `private-index: true` on a caller with no matching `pyproject.toml` entry
+fails silently: the credentials are exported but nothing tells uv to use them, so it
+resolves against public PyPI instead. The caller sees a "package not found" — or,
+worse, a same-named public package installs instead of the real one — with nothing
+pointing at the real cause. The `pyproject.toml` needs both a `[[tool.uv.index]]`
+entry named `retrams` with `explicit = true` (so a first-party name can never be
+silently satisfied from public PyPI) and a `[tool.uv.sources]` entry that routes the
+package to it. See the `retrams-package-index` repo's own README for the canonical
+snippet.
 
 ## Releasing
 

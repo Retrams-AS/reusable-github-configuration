@@ -1,0 +1,81 @@
+name: actionlint
+
+# Correctness counterpart to zizmor.yml, which audits Actions *security*. actionlint
+# catches the class zizmor does not: undefined contexts, malformed expressions, bad
+# `needs:` references, and — via shellcheck, pinned with `--with shellcheck-py` in
+# both steps below rather than left to the runner's preinstalled copy — findings
+# inside `run:` blocks.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["**"]
+
+permissions: {}
+
+jobs:
+  actionlint:
+    name: Run actionlint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+
+      # Through uvx rather than a third-party action: one fewer action to pin and
+      # audit, and byte-identical to what developers run locally.
+      #
+      # -ignore is required, not cosmetic. actionlint does not model the `job`
+      # context, so every `._shared` self-checkout reports a false
+      # "property not defined". Six exist today; without this the check is red
+      # on day one.
+      #
+      # Runs before the `._shared` checkout below: actionlint walks
+      # `.github/workflows` from the repo root, so with `._shared` already in
+      # place it would discover that copy too and lint this repo's own
+      # workflows a second time under a confusing path.
+      #
+      # shellcheck is pinned here rather than left to the runner. actionlint
+      # shells out to whatever `shellcheck` it finds on PATH, and GitHub runners
+      # ship their own — so an unpinned invocation lints `run:` blocks against a
+      # different shellcheck than a developer has locally, and the check is red
+      # in CI for findings that cannot be reproduced. Measured: the runner's
+      # shellcheck flags SC2015 on a `A && B || { …; exit 1; }` guard that 0.11.0
+      # does not. Pinning both tools is what makes local and CI the same command.
+      - name: Run actionlint
+        run: >-
+          uvx --from actionlint-py==1.7.12.24 --with shellcheck-py==0.11.0.1 actionlint
+          -ignore 'property "workflow_(repository|sha)" is not defined'
+
+      # actions/checkout in a called workflow checks out the CALLER's repo, so
+      # the shellcheck script — which lives here, not in the caller — has to be
+      # fetched separately. The `job` context resolves the repo + commit SHA of
+      # the workflow file that defines this job, i.e. this reusable workflow at
+      # the SHA the caller pinned, so the script matches the workflow version.
+      # (Not available on GitHub Enterprise Server.)
+      # https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#job-context
+      - name: Checkout shared scripts at the called ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: ._shared
+          persist-credentials: false
+
+      # actionlint does not read action.yml at all, so the composite actions —
+      # including the OpenBao token exchange — are otherwise unchecked. The
+      # script resolves `.github/actions` relative to the working directory
+      # (the caller's checkout from the first step), not relative to itself.
+      - name: Shellcheck the composite actions
+        run: >-
+          uv run --no-project --with pyyaml --with shellcheck-py
+          python ._shared/.github/scripts/shellcheck-composite-actions.py
