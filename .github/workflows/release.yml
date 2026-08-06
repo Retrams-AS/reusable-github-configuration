@@ -1,13 +1,25 @@
 name: Release (SemVer)
 
+# This repo's OWN release. Not reusable — workflow_dispatch only.
+#
+# The bump is chosen at dispatch, not inferred. Deriving it from Conventional
+# Commit titles was only as accurate as those titles, and a release that
+# silently under-versions a breaking change is expensive: consumers pin by SHA
+# and read the version to decide whether to read the notes. The dropdown makes
+# the decision explicit at the moment it is taken.
+#
+# Mirrors publish-python-package.yml's `bump` input, so both release paths in
+# this org ask the same question the same way.
+
 on:
   workflow_dispatch:
     inputs:
-      version_override:
-        description: "Optional: force the version. A bump (patch/minor/major) or an explicit vX.Y.Z. Leave empty to derive it from PR titles."
-        required: false
-        type: string
-        default: ""
+      bump:
+        description: Which part of the version to increment
+        required: true
+        type: choice
+        options: [patch, minor, major]
+        default: patch
 
 permissions: {}
 
@@ -22,7 +34,6 @@ jobs:
 
     permissions:
       contents: write # create the tag ref + release
-      pull-requests: read # read merged PR titles to derive the bump
 
     steps:
       - name: Guard - releases must run from main
@@ -43,9 +54,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
-          OVERRIDE: ${{ inputs.version_override }}
+          BUMP: ${{ inputs.bump }}
         run: |
           set -euo pipefail
+
+          # `type: choice` constrains the dispatch UI, not the API — a
+          # workflow_dispatch sent over REST can carry any string.
+          case "$BUMP" in
+            major | minor | patch) ;;
+            *) echo "::error::bump must be major, minor or patch, got '$BUMP'."; exit 1 ;;
+          esac
 
           semver_re='^v[0-9]+\.[0-9]+\.[0-9]+$'
 
@@ -66,84 +84,18 @@ jobs:
             patch="${rest##*.}"
           fi
 
-          # Decide the version. Precedence: explicit override > a bump derived from
-          # the Conventional Commit type of the PRs merged since the last release.
-          bump=""
-          tag=""
-          source=""
+          case "$BUMP" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+          esac
+          tag="v${major}.${minor}.${patch}"
 
-          if [ -n "${OVERRIDE:-}" ]; then
-            case "$OVERRIDE" in
-              major | minor | patch)
-                bump="$OVERRIDE"
-                source="override ($OVERRIDE)"
-                ;;
-              *)
-                # Explicit version: valid SemVer, strictly greater than latest.
-                if ! printf '%s' "$OVERRIDE" | grep -qE "$semver_re"; then
-                  echo "::error::version_override '$OVERRIDE' must be patch|minor|major or a vX.Y.Z tag."
-                  exit 1
-                fi
-                highest="$(printf '%s\n%s\n' "${latest:-v0.0.0}" "$OVERRIDE" | sort -V | tail -n1)"
-                if [ "$OVERRIDE" = "${latest:-v0.0.0}" ] || [ "$highest" != "$OVERRIDE" ]; then
-                  echo "::error::version_override '$OVERRIDE' must be greater than ${latest:-v0.0.0}."
-                  exit 1
-                fi
-                tag="$OVERRIDE"
-                source="override ($OVERRIDE)"
-                ;;
-            esac
-          else
-            # Titles of the PRs merged since the last release. Resolve each commit
-            # in the window to its associated PR(s); this is merge-strategy-agnostic.
-            if [ -n "$latest" ]; then
-              titles="$(gh api "repos/$REPO/compare/$latest...$SHA" --jq '.commits[].sha' \
-                | while read -r c; do
-                    [ -n "$c" ] && gh api "repos/$REPO/commits/$c/pulls" --jq '.[].title'
-                  done)"
-            else
-              # First release: every merged PR is in scope.
-              titles="$(gh api --paginate "repos/$REPO/pulls?state=closed&base=main&per_page=100" \
-                --jq '.[] | select(.merged_at != null) | .title')"
-            fi
-
-            # Highest Conventional Commit type wins. Breaking is marked with '!' in
-            # the title (e.g. 'feat!:'); feat -> minor; fix/perf -> patch; any other
-            # type (docs, chore, ci, ...) -> no release.
-            rank=0
-            if printf '%s\n' "$titles" | grep -qiE '^[a-z]+(\([^)]+\))?!:'; then
-              rank=3
-            elif printf '%s\n' "$titles" | grep -qiE '^feat(\([^)]+\))?:'; then
-              rank=2
-            elif printf '%s\n' "$titles" | grep -qiE '^(fix|perf)(\([^)]+\))?:'; then
-              rank=1
-            fi
-
-            case "$rank" in
-              3) bump="major" ;;
-              2) bump="minor" ;;
-              1) bump="patch" ;;
-              0)
-                echo "::error::No releasable changes (feat / fix / perf, or a breaking '!') in PRs since ${latest:-<none>}. Use version_override to force one."
-                exit 1
-                ;;
-            esac
-            source="derived ($bump)"
-          fi
-
-          # Apply the bump unless an explicit version was supplied.
-          if [ -z "$tag" ]; then
-            case "$bump" in
-              major) major=$((major + 1)); minor=0; patch=0 ;;
-              minor) minor=$((minor + 1)); patch=0 ;;
-              patch) patch=$((patch + 1)) ;;
-            esac
-            tag="v${major}.${minor}.${patch}"
-          fi
-
-          echo "Previous: ${latest:-<none>}  New tag: $tag  [$source]"
+          echo "Previous: ${latest:-<none>}  New tag: $tag  [$BUMP]"
 
           # Create a lightweight tag ref pointing at the dispatched commit.
+          # Fails if the tag already exists, which is the right outcome: it means
+          # this bump was already cut and a re-run needs a different one.
           gh api --method POST "repos/$REPO/git/refs" \
             -f "ref=refs/tags/$tag" \
             -f "sha=$SHA"
@@ -169,7 +121,7 @@ jobs:
             echo "|-------|-------|"
             echo "| Tag | \`$tag\` |"
             echo "| Previous | \`${latest:-<none>}\` |"
-            echo "| Version source | $source |"
+            echo "| Bump | $BUMP |"
             echo "| Commit | \`$SHA\` |"
             echo "| Release | $url |"
             echo ""

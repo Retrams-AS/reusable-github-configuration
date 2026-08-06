@@ -346,30 +346,29 @@ jobs:
 
 ## Releasing
 
-### Versioning is derived from PR titles
+### Pick the bump
 
-You never pick the bump — it's read from the
-[Conventional Commit](https://www.conventionalcommits.org/en/v1.0.0/) type of the PRs merged since the last release:
+The release takes a **patch / minor / major** dropdown, defaulting to `patch`, applied to the
+highest existing `vX.Y.Z` tag.
 
-| PR title type                          | Bump      | Meaning                                                        |
-| -------------------------------------- | --------- | -------------------------------------------------------------- |
-| `feat!:` / `fix!:` (any type with `!`) | **major** | Breaking change — a renamed, removed, or newly required input. |
-| `feat:`                                | **minor** | Backwards-compatible change, e.g. a new optional input.        |
-| `fix:` / `perf:`                       | **patch** | Bug or behaviour fix, no input changes.                        |
-| `docs:` / `chore:` / `ci:` / …         | none      | Not releasable on its own.                                     |
+| Bump      | When                                                                        |
+| --------- | --------------------------------------------------------------------------- |
+| **major** | A consumer must change something before bumping their pin — a renamed, removed or newly required input, a changed default, or a new permission the caller must grant. |
+| **minor** | Backwards-compatible addition, e.g. a new optional input.                   |
+| **patch** | Fix that needs nothing from consumers.                                      |
 
-Highest type across the PRs wins; `pr-title-check` enforces the format.
+Conventional Commit titles are enforced by `pr-title-check` and generate the changelog. They do
+not choose the version.
 
 ### Cut a release
 
-**Actions → Release (SemVer) → Run workflow** on `main` — nothing to fill in (or set
-**version_override** for a deliberate version like `v1.0.0`). It tags the commit and
-publishes a **GitHub Release** with an auto-generated changelog; the run summary has the
-tag, SHA, and pin lines.
+**Actions → Release (SemVer) → Run workflow** on `main`, choose the bump, run. It tags the
+commit and publishes a **GitHub Release** with an auto-generated changelog; the run summary has
+the tag, SHA, and pin lines.
 
-It refuses to run off other branches than `main`, or with no releasable PRs since the last tag (use
-`version_override` to force one). Releases are immutable via GitHub's **Immutable
-releases** setting.
+It refuses to run off any branch other than `main`, and fails if the computed tag already
+exists. There is no way to force an arbitrary version — push the tag by hand if you need one.
+Releases are immutable via GitHub's **Immutable releases** setting.
 
 ### Find the hash for a release
 
