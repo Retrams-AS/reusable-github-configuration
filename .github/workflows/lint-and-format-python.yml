@@ -1,5 +1,12 @@
 name: Lint and format
 
+# Reusable: ruff check + ruff format --check via uv.
+#
+# With `private-index: true` the job exchanges its GitHub OIDC token for a
+# short-lived pypi.retrams.no credential before installing. A reusable workflow's
+# permissions are capped by its caller's, so the CALLING workflow must also grant
+# `id-token: write` — otherwise the mint step fails at run time, not at parse time.
+
 on:
   workflow_call:
     inputs:
@@ -7,11 +14,35 @@ on:
         description: Python version to use
         type: string
         default: "3.10"
+      private-index:
+        description: Authenticate to pypi.retrams.no before installing dependencies
+        type: boolean
+        default: false
+      bao-ca:
+        description: PEM of the CA that issued OpenBao's listener certificate
+        type: string
+        default: ""
 
 jobs:
   ruff:
     name: ruff
     runs-on: ubuntu-latest
+    permissions:
+      # contents: read is not optional. This job had no permissions block, so it
+      # inherited the default token; declaring one replaces that default outright
+      # and checkout breaks without it.
+      contents: read
+      # Exchanged with OpenBao for the index token, but only when private-index
+      # is true. Granted unconditionally because permissions are static per job:
+      # there is no way to scope this to the runs that use it without a second
+      # job, and a second job cannot hand credentials over -- the whole design
+      # rests on $GITHUB_ENV persisting within one job. Accepted: this makes
+      # ACTIONS_ID_TOKEN_REQUEST_* readable by every step, including `uv sync`,
+      # which runs third-party build backends. The exposure is bounded by what
+      # the token can buy -- the OpenBao role behind the action's defaults is
+      # read-only and binds repository_owner, so it grants no more than any org
+      # developer already has.
+      id-token: write
     steps:
       - name: Checkout caller repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -30,6 +61,13 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: ._shared
           persist-credentials: false
+
+      - name: Mint the index token
+        if: inputs.private-index
+        uses: ./._shared/.github/actions/openbao-index-token
+        with:
+          bao-ca: ${{ inputs.bao-ca }}
+          uv-index-name: retrams
 
       - name: Set up uv
         uses: ./._shared/.github/actions/setup-uv
