@@ -25,6 +25,7 @@ See [Releasing](#releasing) for how to find a SHA.
 | `.github/workflows/test-node.yml`              | Reusable workflow — runs `yarn test:unit` (Vitest)                          |
 | `.github/workflows/e2e-cypress.yml`            | Reusable workflow — runs Cypress e2e (build → preview → wait → run)         |
 | `.github/workflows/publish-python-package.yml` | Reusable workflow — bumps, builds and publishes a Python package to pypi.retrams.no |
+| `.github/workflows/publish-python-wheels.yml`  | Reusable workflow — the same, for compiled extensions: builds a wheel per platform first |
 | `.github/actions/setup-uv`                     | Composite action — installs uv, sets up Python, runs `uv sync`              |
 | `.github/actions/setup-node-yarn`              | Composite action — Corepack + Node + `yarn install --immutable`             |
 | `.github/actions/openbao-index-token`          | Composite action — exchanges GitHub OIDC for a short-lived pypi.retrams.no token, as an output, `UV_INDEX_*` env vars, or a netrc |
@@ -301,6 +302,73 @@ jobs:
     with:
       bump: ${{ inputs.bump }}
       bao-ca: ${{ vars.BAO_SCANNER_CA }}
+    secrets:
+      app-id: ${{ secrets.RELEASE_APP_ID }}
+      app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+```
+
+### Publish Python wheels (`publish-python-wheels.yml`)
+
+For packages with a compiled extension. `publish-python-package.yml` builds with
+`uv build` on one runner, so it can only produce a wheel for that runner's
+platform; this one builds a wheel per platform first, then publishes them
+together. Everything after the build — OpenBao token, publish-before-write
+ordering, App-token commit, tag guard, Release — is the same, and so are the
+[three things that must line up](#publish-python-package-publish-python-packageyml)
+above. In particular the job runs in a GitHub Environment named by
+`environment` (default `release`), because that name forms half of the OIDC
+subject OpenBao binds.
+
+The matrix forces one thing the single-job version does not. The bump has to
+happen once and reach every build job, so `prepare` bumps and uploads the
+rewritten `pyproject.toml` + `uv.lock`; each build job downloads them over its
+checkout. Bumping per job would race and produce wheels that disagree on
+version. A guard before publishing rejects any wheel not carrying the computed
+version.
+
+**`linux-runner` is a compatibility floor, not a "keep it current" knob.** A
+wheel's manylinux tag comes from the glibc of the machine that compiled it, so
+building on a newer runner silently raises the minimum glibc and locks out
+machines you still deploy to. Pin it to the *oldest* distro you support and move
+it only when you drop that distro. `manylinux: off` is deliberate: it keeps the
+build on the runner so it can link the distro `-dev` packages from
+`linux-apt-packages`, which a manylinux container would not have.
+
+Wheels are self-contained by default — auditwheel vendors the shared libraries
+on Linux, and `windows-delvewheel-add-path` does the same for DLLs on Windows.
+Leave the latter empty only if consumers are expected to install those DLLs
+themselves.
+
+**Usage in another repository:**
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Which part of the version to increment
+        required: true
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+permissions: {}
+
+jobs:
+  release:
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/publish-python-wheels.yml@<commit-sha> # <version>
+    permissions:
+      id-token: write
+      contents: read
+    with:
+      bump: ${{ inputs.bump }}
+      bao-ca: ${{ vars.BAO_SCANNER_CA }}
+      linux-runner: ubuntu-24.04 # the oldest distro you support
+      linux-apt-packages: pkg-config clang libclang-dev libopencv-dev
+      linux-maturin-args: --compatibility manylinux_2_39
+      build-windows: true
+      windows-choco-packages: opencv
+      windows-delvewheel-add-path: C:/tools/opencv/build/x64/vc16/bin
     secrets:
       app-id: ${{ secrets.RELEASE_APP_ID }}
       app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
