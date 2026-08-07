@@ -1,0 +1,70 @@
+name: Type check
+
+# Reusable: `ty check` via uv. Same shape and same caveats as
+# lint-and-format-python.yml -- read the permissions comment there; this file
+# declares `id-token: write` unconditionally for the same reason, so every
+# caller must grant it too.
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: Python version to use
+        type: string
+        default: "3.10"
+      private-index:
+        description: >-
+          Authenticate to pypi.retrams.no before installing dependencies. Also
+          requires a matching pyproject.toml entry for the package; without
+          one, resolution silently falls through to public PyPI.
+        type: boolean
+        default: false
+      bao-ca:
+        description: PEM of the CA that issued OpenBao's listener certificate
+        type: string
+        default: ""
+
+permissions: {}
+
+jobs:
+  ty:
+    name: ty
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Checkout shared actions at the called ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: ._shared
+          persist-credentials: false
+
+      - name: Mint the index token
+        if: inputs.private-index
+        uses: ./._shared/.github/actions/openbao-index-token
+        with:
+          bao-ca: ${{ inputs.bao-ca }}
+          uv-index-name: retrams
+
+      - name: Set up uv
+        uses: ./._shared/.github/actions/setup-uv
+        with:
+          python-version: ${{ inputs.python-version || '3.10' }}
+
+      # ty resolves third-party imports from the installed environment, so `ty`
+      # must be a dev dependency of the caller -- there is no `uvx ty` form that
+      # sees the caller's packages.
+      #
+      # `--exclude` is additive to the caller's own excludes, so `._shared`
+      # (this repo, checked out into their workspace) is skipped without
+      # discarding their config.
+      - name: Run ty
+        run: uv run ty check --exclude ._shared

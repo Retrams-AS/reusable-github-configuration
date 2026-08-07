@@ -17,6 +17,7 @@ See [Releasing](#releasing) for how to find a SHA.
 | File                                           | What it does                                                                |
 | ---------------------------------------------- | --------------------------------------------------------------------------- |
 | `.github/workflows/lint-and-format-python.yml` | Reusable workflow — runs `ruff check` and `ruff format --check` via uv      |
+| `.github/workflows/type-check-python.yml`      | Reusable workflow — runs `ty check` via uv                                  |
 | `.github/workflows/zizmor.yml`                 | Reusable workflow — scans your Actions YAML for security issues with Zizmor |
 | `.github/workflows/actionlint.yml`             | Reusable workflow — lints Actions YAML for correctness (actionlint + shellcheck) |
 | `.github/workflows/pr-title-check.yml`         | Reusable workflow — checks each PR title is a valid Conventional Commit     |
@@ -49,6 +50,34 @@ jobs:
 ```
 
 Both scopes are required, whether or not `private-index` is set.
+
+### Type check (`type-check-python.yml`)
+
+Runs `ty check` using [uv](https://github.com/astral-sh/uv). **Dependency
+contract:** the caller must have `ty` in a dev dependency group — ty reads the
+synced environment to resolve third-party imports, so it cannot be run
+standalone.
+
+```yaml
+jobs:
+  type-check:
+    # Pin to a released commit SHA. See "Releasing" for how to find the latest.
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/type-check-python.yml@<commit-sha> # <calver>
+    with:
+      python-version: "3.12" # optional, defaults to "3.10"
+      private-index: true    # optional, defaults to false — authenticate to pypi.retrams.no
+      bao-ca: ${{ vars.BAO_SCANNER_CA }} # required when private-index is true
+    permissions:
+      contents: read
+      id-token: write
+```
+
+Both scopes are required, whether or not `private-index` is set.
+
+Compiled extensions (`.so`) are opaque to ty — it cannot introspect one without
+a `.pyi` stub, whether or not the extension has been built. Callers importing
+one will see `unresolved-import`; building it in this job does not help. Either
+commit a stub or scope the rule off those files with `[[tool.ty.overrides]]`.
 
 ### Lint and format — Node (`lint-and-format-node.yml`)
 
