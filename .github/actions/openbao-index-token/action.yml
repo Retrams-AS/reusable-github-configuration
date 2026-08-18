@@ -84,9 +84,19 @@ runs:
           exit 1
         fi
 
-        oidc=$(curl -sS --fail-with-body \
+        # --fail-with-body writes the error body to stdout on an HTTP error, so
+        # piping straight into jq hands jq the explanation and then drops it:
+        # every failure surfaced as a bare `curl: (22) ... 400` with the reason
+        # discarded, which cost several wrong guesses to work around. Capture
+        # first, report on failure, parse second. A failure body carries no
+        # token -- that is what failing means -- so echoing it leaks nothing.
+        die_with_body() { echo "::error::$1 failed: $2"; exit 1; }
+
+        oidc_body=$(curl -sS --fail-with-body \
           -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" | jq -r .value)
+          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}") \
+          || die_with_body "GitHub OIDC token request" "$oidc_body"
+        oidc=$(jq -r .value <<<"$oidc_body")
         [ -n "$oidc" ] && [ "$oidc" != "null" ] || { echo "::error::GitHub OIDC token request returned no value"; exit 1; }
         # A GitHub OIDC token is a JWT: base64url segments joined by dots. The
         # guard must run before ::add-mask:: -- that workflow command is
@@ -99,10 +109,11 @@ runs:
 
         # auth/jwt/login proves who we are and returns an OPAQUE service token.
         # The index cannot verify that; its only job is to authorise the next call.
-        svc=$(curl -sS --fail-with-body --cacert "$ca" \
+        svc_body=$(curl -sS --fail-with-body --cacert "$ca" \
           -X POST "${BAO_ADDR}/v1/auth/jwt/login" \
-          -d "$(jq -nc --arg r "$JWT_ROLE" --arg j "$oidc" '{role:$r,jwt:$j}')" \
-          | jq -r .auth.client_token)
+          -d "$(jq -nc --arg r "$JWT_ROLE" --arg j "$oidc" '{role:$r,jwt:$j}')") \
+          || die_with_body "auth/jwt/login (role ${JWT_ROLE})" "$svc_body"
+        svc=$(jq -r .auth.client_token <<<"$svc_body")
         [ -n "$svc" ] && [ "$svc" != "null" ] || { echo "::error::auth/jwt/login returned no client token"; exit 1; }
         # Deliberately the same permissive class as the JWTs, not a tighter one
         # matched to the "hvs." token format. The guard exists to stop a newline
@@ -116,10 +127,11 @@ runs:
         echo "::add-mask::$svc"
 
         # identity/oidc mints the RS256 JWT the index actually verifies against JWKS.
-        token=$(curl -sS --fail-with-body --cacert "$ca" \
+        token_body=$(curl -sS --fail-with-body --cacert "$ca" \
           -H "X-Vault-Token: $svc" \
-          "${BAO_ADDR}/v1/identity/oidc/token/${IDENTITY_ROLE}" \
-          | jq -r .data.token)
+          "${BAO_ADDR}/v1/identity/oidc/token/${IDENTITY_ROLE}") \
+          || die_with_body "identity/oidc/token (role ${IDENTITY_ROLE})" "$token_body"
+        token=$(jq -r .data.token <<<"$token_body")
         [ -n "$token" ] && [ "$token" != "null" ] || { echo "::error::identity/oidc/token returned no token"; exit 1; }
 
         # A JWT is base64url segments joined by dots. Anything else would be
