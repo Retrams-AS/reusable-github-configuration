@@ -215,6 +215,17 @@ jobs:
         with:
           name: bumped-manifests
 
+      # The runner image's own Python is whatever the distro ships, and maturin
+      # filters candidates through the project's requires-python -- so a project
+      # pinned below that version sees "couldn't find any python interpreters"
+      # rather than a version mismatch. Install the requested one and hand
+      # maturin its path outright.
+      - name: Set up Python
+        id: python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ inputs.python-version }}
+
       - name: Install system dependencies
         if: inputs.linux-apt-packages != ''
         env:
@@ -234,7 +245,10 @@ jobs:
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           command: build
-          args: --release --strip --out dist ${{ inputs.linux-maturin-args }}
+          args: >-
+            --release --strip --out dist
+            --interpreter ${{ steps.python.outputs.python-path }}
+            ${{ inputs.linux-maturin-args }}
           manylinux: "off"
 
       # maturin's bundled manylinux policy list can lag the runner's glibc and
@@ -268,6 +282,14 @@ jobs:
         with:
           name: bumped-manifests
 
+      # Same reason as the Linux job: windows-2022 ships 3.9, and maturin reports
+      # a project pinned above that as having no interpreters at all.
+      - name: Set up Python
+        id: python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ inputs.python-version }}
+
       - name: Install native dependencies
         if: inputs.windows-choco-packages != ''
         shell: bash
@@ -282,7 +304,10 @@ jobs:
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           command: build
-          args: --release --strip --out dist ${{ inputs.windows-maturin-args }}
+          args: >-
+            --release --strip --out dist
+            --interpreter ${{ steps.python.outputs.python-path }}
+            ${{ inputs.windows-maturin-args }}
 
       # Windows has no auditwheel equivalent in maturin: without this the wheel
       # records the DLLs as external and fails at import on a machine that lacks
