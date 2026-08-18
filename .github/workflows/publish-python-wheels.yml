@@ -75,6 +75,18 @@ on:
       windows-maturin-args:
         type: string
         default: ""
+      windows-env-vars:
+        description: >-
+          Newline-separated KEY=VALUE pairs exported before the Windows build.
+          Chocolatey packages generally set no environment variables of their
+          own -- the opencv package, for one, only sets OPENCV_DIR when asked
+          with /Environment: -- so a native library it unpacks is left with
+          nothing for a build script to discover it by: no env var, no
+          pkg-config, no CMake config, no vcpkg entry. This is how you point the
+          build at it. A caller-side `env:` cannot do this; it does not cross
+          into a reusable workflow.
+        type: string
+        default: ""
       windows-delvewheel-add-path:
         description: >-
           Directory holding the DLLs to bundle into the Windows wheel. Empty
@@ -226,16 +238,24 @@ jobs:
           # shellcheck disable=SC2086
           sudo apt-get install -y --no-install-recommends $APT_PACKAGES
 
-      # manylinux: off keeps the build on the runner itself rather than in a
+      # container: off keeps the build on the runner itself rather than in a
       # manylinux container, which is what lets it link the distro's -dev
       # packages installed above. The tag then comes from the runner's glibc,
       # which is why linux-runner must be pinned to the oldest supported distro.
+      #
+      # NOT `manylinux: off`, which disables the container the same way but also
+      # makes the action prepend `--manylinux off` to the args -- and --manylinux
+      # is maturin's alias for --compatibility, so a caller passing a tag through
+      # linux-maturin-args ends up with two platform tags and maturin refuses.
+      # Dropping the caller's tag instead is not a fix: `--manylinux off` skips
+      # the auditwheel repair entirely, so the wheel is tagged linux_x86_64 and
+      # bundles none of the shared libraries it just linked against.
       - name: Build wheel
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           command: build
           args: --release --strip --out dist ${{ inputs.linux-maturin-args }}
-          manylinux: "off"
+          container: "off"
 
       # maturin's bundled manylinux policy list can lag the runner's glibc and
       # clamp the tag lower than the binary actually requires -- a wheel tagged
@@ -277,6 +297,24 @@ jobs:
           set -euo pipefail
           # shellcheck disable=SC2086
           choco install -y --no-progress $CHOCO_PACKAGES
+
+      # Written to GITHUB_ENV rather than set on the build step: a machine-level
+      # variable a Chocolatey package does set is not visible to the step that
+      # installed it, and the build runs inside an action we do not control.
+      - name: Export build environment
+        if: inputs.windows-env-vars != ''
+        shell: bash
+        env:
+          ENV_VARS: ${{ inputs.windows-env-vars }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            case "$line" in
+              *=*) printf '%s\n' "$line" >> "$GITHUB_ENV" ;;
+              *) echo "::error::windows-env-vars line is not KEY=VALUE: $line"; exit 1 ;;
+            esac
+          done <<< "$ENV_VARS"
 
       - name: Build wheel
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
