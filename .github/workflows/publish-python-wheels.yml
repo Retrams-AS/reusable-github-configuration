@@ -125,6 +125,10 @@ jobs:
       - uses: ./._shared/.github/actions/setup-uv
         with:
           python-version: ${{ inputs.python-version }}
+          # This job never imports the project -- it only shells out to uv's own
+          # subcommands. Syncing would compile the extension here, where the
+          # native toolchain is deliberately absent.
+          sync: "false"
 
       - name: Bump the version
         id: bump
@@ -142,7 +146,12 @@ jobs:
           [ -f pyproject.toml ] && [ -s uv.lock ] || {
             echo "::error::pyproject.toml and uv.lock must both exist and be non-empty."; exit 1
           }
-          version=$(uv version --bump "$BUMP" --short)
+          # --no-sync: without it uv installs the project into the venv after
+          # re-locking, and for a compiled extension that is a full cargo build
+          # -- on a runner that has none of the native toolchain, because
+          # linux-apt-packages is installed on the build jobs, not here. The
+          # re-lock still happens, so uv.lock carries the new version.
+          version=$(uv version --bump "$BUMP" --short --no-sync)
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Publishing \`$version\`" >> "$GITHUB_STEP_SUMMARY"
 
@@ -326,6 +335,10 @@ jobs:
       - uses: ./._shared/.github/actions/setup-uv
         with:
           python-version: ${{ inputs.python-version }}
+          # This job never imports the project -- it only shells out to uv's own
+          # subcommands. Syncing would compile the extension here, where the
+          # native toolchain is deliberately absent.
+          sync: "false"
 
       - name: Collect the built wheels
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1

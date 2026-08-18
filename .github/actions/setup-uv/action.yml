@@ -5,6 +5,14 @@ inputs:
   python-version:
     description: Python version to use
     default: "3.10"
+  sync:
+    description: >-
+      Set false for jobs that only need uv's own subcommands (version, publish,
+      build) and never import the project. `uv sync` installs the root package
+      editable, which for a compiled extension is a full native build -- on a
+      runner that has no toolchain, because the -dev packages are installed on
+      the build jobs.
+    default: "true"
 
 runs:
   using: "composite"
@@ -17,5 +25,6 @@ runs:
         cache-dependency-glob: uv.lock
 
     - name: Install dependencies
+      if: inputs.sync == 'true'
       shell: bash
       run: uv sync
