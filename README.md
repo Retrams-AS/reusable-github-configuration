@@ -21,6 +21,7 @@ See [Releasing](#releasing) for how to find a SHA.
 | `.github/workflows/zizmor.yml`                 | Reusable workflow — scans your Actions YAML for security issues with Zizmor |
 | `.github/workflows/actionlint.yml`             | Reusable workflow — lints Actions YAML for correctness (actionlint + shellcheck) |
 | `.github/workflows/pr-title-check.yml`         | Reusable workflow — checks each PR title is a valid Conventional Commit     |
+| `.github/workflows/commit-trailer-check.yml`   | Reusable workflow — checks AI co-author trailers are well formed                |
 | `.github/workflows/lint-and-format-node.yml`   | Reusable workflow — runs `yarn lint` and `yarn format` (ESLint + Prettier)  |
 | `.github/workflows/test-node.yml`              | Reusable workflow — runs `yarn test:unit` (Vitest)                          |
 | `.github/workflows/e2e-cypress.yml`            | Reusable workflow — runs Cypress e2e (build → preview → wait → run)         |
@@ -405,6 +406,29 @@ CI runs this exact command, shellcheck pin included.
 Fails any PR whose title isn't a valid
 [Conventional Commit](https://www.conventionalcommits.org/en/v1.0.0/) — this is what lets
 releases read their version straight from PR titles (see [Releasing](#releasing)).
+
+Like Zizmor, keep one copy and require it org-wide via a Ruleset.
+
+### AI co-author trailer check (`commit-trailer-check.yml`)
+
+Fails any PR containing a commit whose `Co-Authored-By` trailer claims Anthropic authorship
+but doesn't match the form the `retrams-contributing:git-commit` skill mandates:
+
+```
+Co-Authored-By: Claude Code 2.1.235 (Claude Opus 5) <noreply@anthropic.com>
+```
+
+Harness, then version, then the model in parentheses. Extra qualifiers inside the parentheses
+(`, 1M context`) are accepted; a missing version is not.
+
+It **does not** fail on a missing trailer. Whether a commit was AI-assisted isn't observable
+from CI, so failing on absence would only punish human-authored PRs — this enforces the format
+so harness and model attribution survives, not the presence of attribution itself. Per-commit
+conformance is written to the job summary regardless, so a reviewer can see the split.
+
+Why it exists: that trailer is the only durable record of which harness and model wrote a
+change, and it's the signal Claude-usage PR attribution reads. The format had already drifted to
+five variants across the org, of which two were correct.
 
 Like Zizmor, keep one copy and require it org-wide via a Ruleset.
 
