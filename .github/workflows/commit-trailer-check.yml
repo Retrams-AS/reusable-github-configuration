@@ -1,0 +1,113 @@
+name: AI co-author trailer is well formed
+
+# retrams-contributing:git-commit mandates that every AI-assisted commit carries a
+# Co-Authored-By trailer naming the harness, its version and the model. That trailer is
+# the only durable record of which harness and model wrote a change, and it is the signal
+# the Claude Usage dashboard attributes pull requests with (retrams ADR 0009).
+#
+# What this check does NOT do: assert that a commit should have had a trailer. Only the
+# author knows that, and nothing observable from CI reveals it. What it does enforce is
+# that any trailer claiming Anthropic authorship is parseable, so harness and model
+# attribution is not lost to formatting drift. Of 113 such trailers written in the 30 days
+# to 2026-09-02, five distinct formats were in use and only 2 matched the mandated one —
+# the drift this exists to stop.
+#
+# Like zizmor and pr-title-check, maintain it here and require it org-wide via a Ruleset
+# ("Require workflows to pass before merging").
+#
+# Squash landing is safe: every Retrams repo has squash_merge_commit_message =
+# COMMIT_MESSAGES, so commit bodies — and therefore trailers — are concatenated into the
+# squash commit. Validating at PR time is enough to protect the default branch's history.
+
+on:
+  workflow_call:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    branches: ["**"]
+
+permissions: {}
+
+jobs:
+  trailer-format:
+    name: Validate AI co-author trailers
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+
+    steps:
+      # Full history so the PR's base commit is present for the rev-list range.
+      # No credentials persisted: this job only ever reads.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check every commit's Anthropic co-author trailer
+        env:
+          # From the event payload, never inlined into the script — commit messages
+          # and branch names are untrusted input.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          # git parses the trailer block itself; `valueonly` strips the key, leaving
+          # e.g. "Claude Code 2.1.235 (Claude Opus 5) <noreply@anthropic.com>".
+          # Canonical form per retrams-contributing:git-commit is harness, version, then
+          # the model in parentheses. Extra qualifiers inside the parentheses
+          # (", 1M context") are accepted; a missing version is not.
+          canonical='^[^()<>]*[0-9]+\.[0-9]+\.[0-9]+ \([^()]+\) <noreply@anthropic\.com>$'
+          anthropic='<noreply@anthropic\.com>$'
+
+          bad=0 attributed=0 total=0
+          : > summary.md
+
+          while IFS= read -r sha; do
+            total=$((total + 1))
+            short="${sha:0:7}"
+            trailers=$(git log -1 --format='%(trailers:key=Co-authored-by,valueonly)' "$sha" \
+                       | grep -E "$anthropic" || true)
+
+            if [ -z "$trailers" ]; then
+              echo "| \`$short\` | — | not AI-attributed |" >> summary.md
+              continue
+            fi
+            attributed=$((attributed + 1))
+
+            while IFS= read -r trailer; do
+              [ -n "$trailer" ] || continue
+              if printf '%s' "$trailer" | grep -qiE "$canonical"; then
+                echo "| \`$short\` | ok | $trailer |" >> summary.md
+              else
+                echo "| \`$short\` | **malformed** | $trailer |" >> summary.md
+                echo "::error::Commit $short has a malformed Anthropic co-author trailer: '$trailer'" >&2
+                bad=$((bad + 1))
+              fi
+            done <<< "$trailers"
+          # --no-merges drops the synthetic merge commit GitHub checks out for a PR,
+          # which would otherwise inflate the denominator by one and always report
+          # itself as un-attributed. Real merge commits carry no authored content
+          # either, so excluding them is right in both cases.
+          done < <(git rev-list --no-merges "${BASE_SHA}..HEAD")
+
+          {
+            echo "## AI co-author trailers"
+            echo
+            echo "| commit | trailer | value |"
+            echo "|---|---|---|"
+            cat summary.md
+            echo
+            echo "$attributed of $total commit(s) in this PR are AI-attributed."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$bad" -gt 0 ]; then
+            {
+              echo "::error::$bad co-author trailer(s) do not match the required format."
+              echo "Required: Co-Authored-By: <harness> <version> (<model>) <noreply@anthropic.com>"
+              echo "Example:  Co-Authored-By: Claude Code 2.1.235 (Claude Opus 5) <noreply@anthropic.com>"
+              echo "Harness name and version from 'claude --version'; model from the agent's own context."
+              echo "See the retrams-contributing:git-commit skill, then amend and force-push."
+            } >&2
+            exit 1
+          fi
+
+          echo "All Anthropic co-author trailers are well formed ($attributed of $total commits)."
