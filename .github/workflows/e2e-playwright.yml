@@ -1,0 +1,84 @@
+name: E2E (Playwright)
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node.js version to use
+        type: string
+        # Active LTS. Node 20 is EOL and carries known high-severity advisories,
+        # so it is not a safe default for a repo that adopts this workflow
+        # without setting the input.
+        default: "24"
+      browsers:
+        description: >-
+          Space-separated Playwright browsers to download before the run
+          (chromium, firefox, webkit). Must cover every project the caller's
+          playwright.config declares, or those projects fail on a missing
+          browser.
+        type: string
+        default: chromium
+      enable-scripts:
+        description: >-
+          Value for YARN_ENABLE_SCRIPTS during install. "false" (default) skips
+          package build scripts (e.g. an Electron native rebuild) that a
+          browser-context e2e run doesn't need; set "true" when a postinstall
+          must run.
+        type: string
+        default: "false"
+
+jobs:
+  e2e:
+    name: E2E (Playwright)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Checkout shared actions at the called ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # job.workflow_repository/sha resolve this reusable workflow's repo and
+          # the exact SHA the caller pinned, so the composite action matches the
+          # workflow version. (Not available on GitHub Enterprise Server.)
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: ._shared
+          persist-credentials: false
+
+      - name: Set up Node + Yarn
+        uses: ./._shared/.github/actions/setup-node-yarn
+        with:
+          node-version: ${{ inputs.node-version }}
+          enable-scripts: ${{ inputs.enable-scripts }}
+
+      - name: Install Playwright browsers
+        # --with-deps pulls the system libraries the browser needs, which the
+        # runner image doesn't ship for every engine. Read into an array so a
+        # multi-browser input splits into arguments without an unquoted expansion.
+        env:
+          BROWSERS: ${{ inputs.browsers }}
+        run: |
+          read -ra browsers <<< "$BROWSERS"
+          yarn playwright install --with-deps "${browsers[@]}"
+
+      - name: Run Playwright
+        # No build/serve/wait steps: Playwright's own `webServer` config owns
+        # starting the app and waiting for it, so the caller declares that once
+        # in playwright.config instead of duplicating it here.
+        run: yarn test:e2e
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+          if-no-files-found: ignore

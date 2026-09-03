@@ -4,7 +4,9 @@ description: Enable Corepack, set up Node with Yarn cache, and install dependenc
 inputs:
   node-version:
     description: Node.js version to use
-    default: "20"
+    # Active LTS. Node 20 went EOL and carries known high-severity advisories,
+    # so it is not a safe default for a caller that omits the input.
+    default: "24"
   enable-scripts:
     description: >-
       Value for YARN_ENABLE_SCRIPTS during install. "false" (default) skips

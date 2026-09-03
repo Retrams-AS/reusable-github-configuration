@@ -24,7 +24,7 @@ See [Releasing](#releasing) for how to find a SHA.
 | `.github/workflows/commit-trailer-check.yml`   | Reusable workflow — checks AI co-author trailers are well formed                |
 | `.github/workflows/lint-and-format-node.yml`   | Reusable workflow — runs `yarn lint` and `yarn format` (ESLint + Prettier)  |
 | `.github/workflows/test-node.yml`              | Reusable workflow — runs `yarn test:unit` (Vitest)                          |
-| `.github/workflows/e2e-cypress.yml`            | Reusable workflow — runs Cypress e2e (build → preview → wait → run)         |
+| `.github/workflows/e2e-playwright.yml`         | Reusable workflow — runs Playwright e2e (`yarn test:e2e`)                   |
 | `.github/workflows/publish-python-package.yml` | Reusable workflow — bumps, builds and publishes a Python package to pypi.retrams.no |
 | `.github/workflows/publish-python-wheels.yml`  | Reusable workflow — the same, for compiled extensions: builds a wheel per platform first |
 | `.github/actions/setup-uv`                     | Composite action — installs uv, sets up Python, runs `uv sync`              |
@@ -114,24 +114,28 @@ jobs:
       enable-scripts: false   # optional, defaults to false (skips install build scripts)
 ```
 
-### E2E — Cypress (`e2e-cypress.yml`)
+### E2E — Playwright (`e2e-playwright.yml`)
 
-Builds the app, serves it, waits for it, and runs Cypress specs. **Script
-contract:** the `build-command`/`start-command` (defaults `yarn build` /
-`yarn preview`) must produce and serve the app at `wait-on`.
+Installs the browsers and runs `yarn test:e2e`. **Script contract:** the caller
+must expose a `test:e2e` script.
+
+There are no build / serve / wait inputs, because Playwright already owns that:
+put the app under [`webServer`](https://playwright.dev/docs/test-webserver) in
+`playwright.config` and it is started, waited for and torn down for both CI and
+local runs from one declaration. The `playwright-report/` and `test-results/`
+directories are uploaded as an artifact when the job fails.
 
 ```yaml
 jobs:
   e2e:
     permissions:
       contents: read
-    uses: Retrams-AS/reusable-github-configuration/.github/workflows/e2e-cypress.yml@<commit-sha> # <version>
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/e2e-playwright.yml@<commit-sha> # <version>
     with:
-      node-version: "20"                   # optional
-      build-command: "yarn build"          # optional
-      start-command: "yarn preview"        # optional
-      wait-on: "http://localhost:4173"     # optional
-      wait-on-timeout: 120                 # optional
+      node-version: "24"          # optional, defaults to "24" (active LTS)
+      browsers: "chromium"        # optional — space-separated; must cover every
+                                  #   project in playwright.config
+      enable-scripts: "false"     # optional, defaults to "false"
 ```
 
 ### Build and push image to DOCR (`build-and-push-docr.yml`)
@@ -480,7 +484,7 @@ steps:
   - uses: actions/checkout@v6
   - uses: Retrams-AS/reusable-github-configuration/.github/actions/setup-node-yarn@<commit-sha> # <version>
     with:
-      node-version: "20"      # optional, defaults to "20"
+      node-version: "24"      # optional, defaults to "24" (active LTS)
       enable-scripts: "false" # optional, defaults to "false"
 ```
 
