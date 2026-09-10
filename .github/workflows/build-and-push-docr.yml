@@ -75,9 +75,24 @@ on:
         description: PEM of the CA that issued OpenBao's listener certificate
         type: string
         default: ""
+      spaces-object:
+        description: >-
+          Spaces object URL to download into the build context before the
+          build -- for a binary blob a build needs but that does not belong in
+          git, such as a vendor SDK. The Dockerfile COPYs it by basename.
+          Empty skips the step entirely; when set, both DO_SPACES secrets are
+          required.
+        type: string
+        default: ""
     secrets:
       DO_ACCESS_KEY:
         description: DigitalOcean API token with registry scope (required when push or registry_login is true)
+        required: false
+      DO_SPACES_ACCESS_KEY_ID:
+        description: Spaces access key (required when spaces-object is set)
+        required: false
+      DO_SPACES_SECRET_KEY:
+        description: Spaces secret key (required when spaces-object is set)
         required: false
 
 permissions: {}
@@ -134,6 +149,31 @@ jobs:
         uses: ./._shared/.github/actions/docr-login
         with:
           token: ${{ secrets.DO_ACCESS_KEY }}
+
+      # Binaries a build needs -- a vendor SDK, say -- stay out of git and live
+      # in Spaces, which BuildKit cannot read: there is nowhere to put the
+      # credentials. So the runner downloads it into the context first. Runs
+      # before the index-token mint below, so an 88 MB pull cannot eat that
+      # token's 15-minute window. aws-cli is preinstalled on ubuntu runners.
+      - name: Fetch object from Spaces into the build context
+        if: inputs.spaces-object != ''
+        env:
+          OBJECT: ${{ inputs.spaces-object }}
+          CONTEXT: ${{ inputs.context }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.DO_SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.DO_SPACES_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          rest=${OBJECT#https://}
+          host=${rest%%/*}
+          key=${rest#*/}
+          case "$host" in
+            *.digitaloceanspaces.com) ;;
+            *) echo "spaces-object must be a digitaloceanspaces.com URL, got: $OBJECT" >&2; exit 1 ;;
+          esac
+          aws s3 cp "s3://${host%%.*}/${key}" "${CONTEXT}/$(basename "$key")" \
+            --endpoint-url "https://$(echo "$host" | cut -d. -f2).digitaloceanspaces.com" \
+            --no-progress
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
