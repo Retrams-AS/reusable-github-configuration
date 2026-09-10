@@ -172,6 +172,22 @@ RUN --mount=type=secret,id=netrc,target=/tmp/netrc \
 The identical line builds locally with
 `docker build --secret id=netrc,src=$HOME/.netrc .`.
 
+`spaces-object` covers the other kind of private dependency: a binary blob the build needs
+that has no business in git, such as a vendor SDK. Keep it in Spaces; the runner downloads
+the object into the build context before the build, and the Dockerfile `COPY`s it by
+basename:
+
+```yaml
+    with:
+      spaces-object: https://vendor-sdks.fra1.digitaloceanspaces.com/omron-sentech/SentechSDK-1.2.3-Linux64-x64.tgz
+    secrets:
+      DO_SPACES_ACCESS_KEY_ID: ${{ secrets.DO_SPACES_ACCESS_KEY_ID }}
+      DO_SPACES_SECRET_KEY: ${{ secrets.DO_SPACES_SECRET_KEY }}
+```
+
+Locally, `aws s3 cp` the same object into the folder and build as usual. Reference
+implementation: `rmrs-compose`, `2D-camera/OMRON_SENTECH`.
+
 ### Release (CalVer) (`release_calver.yml`)
 
 Mints a CalVer `YYYY-MM.N` version by retagging the existing `<image>:<sha7>`
