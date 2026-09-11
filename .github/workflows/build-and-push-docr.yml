@@ -6,6 +6,11 @@ name: Build and push image to DOCR
 # release flow that promotes sha artifacts to immutable version tags by
 # retagging (reference implementation: fot_server).
 #
+# With `image-irrelevant-paths` set, a caller can drop its push path filter
+# and still not pay for a build on every doc or manifest commit: this workflow
+# retags the parent's artifact instead. That is what lets a release retag any
+# commit on the default branch, which the deploy-ref design depends on.
+#
 # If the Dockerfile PULLS a private image (e.g. a prebuilt base), pass
 # registry_login: true so build-only runs authenticate too — otherwise they
 # fail on an unauthorized pull.
@@ -84,6 +89,18 @@ on:
           required.
         type: string
         default: ""
+      image-irrelevant-paths:
+        description: >-
+          Space-separated git pathspecs the image does not depend on, e.g.
+          "k8s/** docs/** README.md .github/**". When every path changed since the
+          parent commit matches one of these, the parent's sha7 artifact is retagged
+          instead of rebuilt. Empty (default) always builds.
+        type: string
+        default: ""
+    outputs:
+      sha7:
+        description: 7-char commit sha the image is tagged with
+        value: ${{ jobs.build.outputs.sha7 }}
     secrets:
       DO_ACCESS_KEY:
         description: DigitalOcean API token with registry scope (required when push or registry_login is true)
@@ -100,6 +117,8 @@ permissions: {}
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      sha7: ${{ steps.sha.outputs.sha7 }}
     permissions:
       # contents: read is not optional. Declaring a permissions block at all
       # replaces the default token outright, so it must stay explicit here or
@@ -122,11 +141,43 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          # depth 2: the retag decision diffs HEAD against its parent.
+          fetch-depth: 2
           persist-credentials: false
 
       - name: Compute sha tag
         id: sha
         run: echo "sha7=$(echo "$GITHUB_SHA" | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      # Retag only when EVERY changed path is ignorable. Phrased the other way
+      # round, a commit touching both k8s/ and app/ would ship stale code; this
+      # way an unanticipated directory falls through to a real build.
+      - name: Decide rebuild or retag
+        id: plan
+        if: inputs.push && inputs.image-irrelevant-paths != ''
+        env:
+          IGNORABLE: ${{ inputs.image-irrelevant-paths }}
+        run: |
+          set -euo pipefail
+          if ! parent=$(git rev-parse -q --verify "${GITHUB_SHA}^"); then
+            echo "No parent commit — building."
+            echo "retag=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          excludes=()
+          for p in $IGNORABLE; do
+            excludes+=(":(exclude)${p}")
+          done
+          relevant=$(git diff --name-only "$parent" "$GITHUB_SHA" -- . "${excludes[@]}")
+          if [ -z "$relevant" ]; then
+            echo "Only image-irrelevant paths changed since ${parent:0:7} — retagging."
+            echo "retag=true" >> "$GITHUB_OUTPUT"
+            echo "parent7=${parent:0:7}" >> "$GITHUB_OUTPUT"
+          else
+            echo "Image-relevant paths changed — building:"
+            echo "$relevant"
+            echo "retag=false" >> "$GITHUB_OUTPUT"
+          fi
 
       # Authenticate via the org docr-login composite, checked out from this
       # workflow's own repo at the called ref and referenced by local path
@@ -150,13 +201,26 @@ jobs:
         with:
           token: ${{ secrets.DO_ACCESS_KEY }}
 
+      # continue-on-error: a parent with no artifact must fall back to a real
+      # build rather than break the caller, which is why every step below is
+      # gated on this one's outcome rather than on steps.plan.
+      - name: Retag the parent's artifact
+        id: retag
+        if: steps.plan.outputs.retag == 'true'
+        continue-on-error: true
+        env:
+          IMAGE: ${{ inputs.image }}
+          SHA7: ${{ steps.sha.outputs.sha7 }}
+          PARENT7: ${{ steps.plan.outputs.parent7 }}
+        run: docker buildx imagetools create --tag "${IMAGE}:${SHA7}" "${IMAGE}:${PARENT7}"
+
       # Binaries a build needs -- a vendor SDK, say -- stay out of git and live
       # in Spaces, which BuildKit cannot read: there is nowhere to put the
       # credentials. So the runner downloads it into the context first. Runs
       # before the index-token mint below, so an 88 MB pull cannot eat that
       # token's 15-minute window. aws-cli is preinstalled on ubuntu runners.
       - name: Fetch object from Spaces into the build context
-        if: inputs.spaces-object != ''
+        if: inputs.spaces-object != '' && steps.retag.outcome != 'success'
         env:
           OBJECT: ${{ inputs.spaces-object }}
           CONTEXT: ${{ inputs.context }}
@@ -176,6 +240,7 @@ jobs:
             --no-progress
 
       - name: Set up Docker Buildx
+        if: steps.retag.outcome != 'success'
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       # The token lives 15 minutes; docr-login and buildx setup above do real
@@ -183,13 +248,14 @@ jobs:
       # before the step that spends it.
       - name: Mint the index token
         id: index-token
-        if: inputs.private-index
+        if: inputs.private-index && steps.retag.outcome != 'success'
         uses: ./._shared/.github/actions/openbao-index-token
         with:
           bao-ca: ${{ inputs.bao-ca }}
           netrc-file: ${{ runner.temp }}/netrc
 
       - name: Build image
+        if: steps.retag.outcome != 'success'
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: ${{ inputs.context }}
