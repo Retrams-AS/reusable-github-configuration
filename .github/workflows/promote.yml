@@ -1,12 +1,15 @@
 name: Promote
 
-# Reusable: promote-many's "deploy a version to one target" half. Bumps the
-# quoted newTag in a single kustomize overlay by committing directly to the
-# default branch via the Contents API — that commit is the deploy (Argo CD
-# syncs). Independently dispatchable — release once, then promote to each
-# target (dev/prod/clinic) deliberately. Rollback = revert the bump commit.
+# Reusable: promote-many's "deploy a version to one target" half. Independently
+# dispatchable — release once, then promote to each target deliberately. Which
+# mode a service uses follows from what its Application's targetRevision names:
 #
-# The commit is made with a dedicated GitHub App's token; that App must be a
+#   bump      the default branch  → rewrite the overlay's newTag there (Contents
+#                                   API). Rollback = revert the bump commit.
+#   move-ref  a deploy ref        → point refs/heads/<ref> at the released
+#                                   commit. Rollback = move the ref back.
+#
+# The write is made with a dedicated GitHub App's token; that App must be a
 # bypass actor on the default branch's ruleset. Design rationale:
 # docs/superpowers/specs/2026-07-14-auto-calver-and-direct-promote-design.md
 
@@ -14,13 +17,28 @@ on:
   workflow_call:
     inputs:
       target:
-        description: Overlay path whose newTag to bump, e.g. k8s/overlays/prod
-        required: true
+        description: Overlay path whose newTag to bump, e.g. k8s/overlays/prod (mode=bump only)
+        required: false
         type: string
+        default: ""
       version:
-        description: CalVer version to deploy (must already be minted by release_calver)
+        description: >-
+          mode=bump — the value written to newTag. A CalVer for a release, or a
+          7-char sha when Build pins a dev overlay; not validated here, since
+          release_calver owns the CalVer regex.
+          mode=move-ref — the tag or sha the ref is moved onto.
         required: true
         type: string
+      mode:
+        description: >-
+          `bump` rewrites the overlay's newTag on the default branch.
+          `move-ref` force-updates refs/heads/<ref> to the commit `version` names.
+        type: string
+        default: bump
+      ref:
+        description: Branch to move when mode is move-ref, e.g. deploy/prod
+        type: string
+        default: ""
     secrets:
       app-id:
         description: ID of the GitHub App that is a bypass actor on the default-branch ruleset.
@@ -38,8 +56,18 @@ jobs:
     # Serialize promotes to the same target so two dispatches can't race the
     # read-modify-write.
     concurrency:
-      group: promote-${{ inputs.target }}
+      group: promote-${{ inputs.mode }}-${{ inputs.target }}${{ inputs.ref }}
     steps:
+      # A typo in mode would otherwise run neither step and report success.
+      - name: Validate mode
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          case "$MODE" in
+            bump|move-ref) ;;
+            *) echo "::error::mode must be 'bump' or 'move-ref', got '${MODE}'."; exit 1 ;;
+          esac
+
       # Pinned create-github-app-token v3.2.0, token scoped to the minimum
       # (contents write). The App is an intentional ruleset bypass actor (see
       # issue #9), so the github-app audit is acknowledged rather than a
@@ -53,6 +81,7 @@ jobs:
           permission-contents: write
 
       - name: Bump newTag on the default branch
+        if: inputs.mode == 'bump'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
@@ -61,6 +90,7 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
+          [ -n "$TARGET" ] || { echo "::error::mode=bump needs a target input."; exit 1; }
           name=$(basename "$TARGET")
           file="${TARGET}/kustomization.yaml"
 
@@ -89,3 +119,29 @@ jobs:
             -f sha="$blob_sha" \
             -f branch="$DEFAULT_BRANCH" > /dev/null
           echo "Promoted \`${TARGET}\` to \`${VERSION}\` on \`${DEFAULT_BRANCH}\`." >> "$GITHUB_STEP_SUMMARY"
+
+      # force, because deploy/<env> moves between release tags whose commits are
+      # not descendants of each other. Created on first use, so a service's
+      # first promote does not need a hand-made branch.
+      - name: Move the deploy ref
+        if: inputs.mode == 'move-ref'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          REF: ${{ inputs.ref }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          [ -n "$REF" ] || { echo "::error::mode=move-ref needs a ref input."; exit 1; }
+          if ! sha=$(gh api "repos/${REPO}/commits/${VERSION}" --jq .sha); then
+            echo "::error::${VERSION} does not resolve to a commit in ${REPO} — has it been released?"
+            exit 1
+          fi
+          if gh api "repos/${REPO}/git/ref/heads/${REF}" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/${REPO}/git/refs/heads/${REF}" \
+              -f sha="$sha" -F force=true > /dev/null
+          else
+            gh api --method POST "repos/${REPO}/git/refs" \
+              -f ref="refs/heads/${REF}" -f sha="$sha" > /dev/null
+          fi
+          echo "Moved \`${REF}\` to \`${VERSION}\` (\`${sha:0:7}\`)." >> "$GITHUB_STEP_SUMMARY"
