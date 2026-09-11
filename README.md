@@ -311,7 +311,7 @@ on:
 jobs:
   build:
     permissions: { contents: read, id-token: write }
-    uses: Retrams-AS/reusable-github-configuration/.github/workflows/build-and-push-docr.yml@v3
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/build-and-push-docr.yml@92f2142cb1837fffee0c72b121f090c1f8ad8782 # v3.0.0
     with:
       image: registry.digitalocean.com/the-retrams-registry/<service>
       push: ${{ github.event_name != 'pull_request' }}
@@ -323,7 +323,7 @@ jobs:
     needs: build
     if: github.event_name == 'push'
     permissions: {}
-    uses: Retrams-AS/reusable-github-configuration/.github/workflows/promote.yml@v3
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/promote.yml@92f2142cb1837fffee0c72b121f090c1f8ad8782 # v3.0.0
     with:
       target: k8s/overlays/dev
       version: ${{ needs.build.outputs.sha7 }}
@@ -340,7 +340,7 @@ no deploy ref, and its Application keeps `targetRevision: master`.
 *inside* the commit it tags, so the tag names its own image:
 
 ```yaml
-    uses: Retrams-AS/reusable-github-configuration/.github/workflows/release_calver.yml@v3
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/release_calver.yml@92f2142cb1837fffee0c72b121f090c1f8ad8782 # v3.0.0
     with:
       image: registry.digitalocean.com/the-retrams-registry/<service>
       pin-overlays: "k8s/overlays/prod"
