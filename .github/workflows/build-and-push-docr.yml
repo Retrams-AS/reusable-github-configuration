@@ -6,10 +6,8 @@ name: Build and push image to DOCR
 # release flow that promotes sha artifacts to immutable version tags by
 # retagging (reference implementation: fot_server).
 #
-# With `image-irrelevant-paths` set, a caller can drop its push path filter
-# and still not pay for a build on every doc or manifest commit: this workflow
-# retags the parent's artifact instead. That is what lets a release retag any
-# commit on the default branch, which the deploy-ref design depends on.
+# `image-irrelevant-paths` lets a caller drop its push path filter without
+# paying for a build per doc commit, so every commit has an artifact to retag.
 #
 # If the Dockerfile PULLS a private image (e.g. a prebuilt base), pass
 # registry_login: true so build-only runs authenticate too — otherwise they
@@ -214,10 +212,9 @@ jobs:
           PARENT7: ${{ steps.plan.outputs.parent7 }}
         run: docker buildx imagetools create --tag "${IMAGE}:${SHA7}" "${IMAGE}:${PARENT7}"
 
-      # Binaries a build needs -- a vendor SDK, say -- stay out of git and live
-      # in Spaces, which BuildKit cannot read: there is nowhere to put the
-      # credentials. So the runner downloads it into the context first. Runs
-      # before the index-token mint below, so an 88 MB pull cannot eat that
+      # A vendor SDK or the like stays out of git and lives in Spaces, which
+      # BuildKit cannot read, so the runner fetches it into the context first --
+      # and ahead of the index-token mint, so an 88 MB pull cannot eat that
       # token's 15-minute window. aws-cli is preinstalled on ubuntu runners.
       - name: Fetch object from Spaces into the build context
         if: inputs.spaces-object != '' && steps.retag.outcome != 'success'

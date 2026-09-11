@@ -6,9 +6,8 @@ name: Release (CalVer)
 # CALLER's repo (tag + release land there). Pair with promote.yml — the
 # resolved version is exposed as an output so promote can be chained.
 #
-# With pin-overlays, the tag lands on a child of $GITHUB_SHA carrying the new
-# newTag rather than on $GITHUB_SHA itself, so the tag names its own image and
-# an Application can be pointed at it. The image is still retagged from
+# With pin-overlays the tag lands on a child of $GITHUB_SHA carrying the new
+# newTag, so the tag names its own image. The image still comes from
 # $GITHUB_SHA's sha7 — the commit that actually produced the artifact.
 #
 # The tag is minted via gh (API), not `git push`, so the checkout needs no
@@ -83,6 +82,16 @@ jobs:
             fi
           else
             existing=$(git tag --points-at "$GITHUB_SHA" | { grep -E "$calver" || true; } | sort -V | tail -1)
+            # With pin-overlays the tag sits on a child of this commit, so
+            # --points-at misses it and a second dispatch would mint a duplicate
+            # version, image tag and Release rather than no-op.
+            if [ -z "$existing" ]; then
+              existing=$(git tag -l | { grep -E "$calver" || true; } | while read -r t; do
+                if [ "$(git rev-parse -q --verify "${t}^{commit}^" || true)" = "$GITHUB_SHA" ]; then
+                  echo "$t"
+                fi
+              done | sort -V | tail -1)
+            fi
             if [ -n "$existing" ]; then
               VERSION="$existing"
               echo "Commit already tagged ${VERSION}; reusing it."
@@ -118,17 +127,37 @@ jobs:
 
       # Build-once/promote-many: retag the existing sha artifact to the CalVer
       # tag (manifest copy — byte-identical, no rebuild).
+      #
+      # Walks back over kustomization-only commits. A promote bump rewrites a
+      # newTag and nothing else, so it has no artifact of its own and never will
+      # -- it carries [skip ci] because there is nothing there to build. The
+      # merge commit beneath it is the content this release is of.
       - name: Promote sha artifact to CalVer tag
         if: steps.tag.outputs.build == 'true'
         env:
           IMAGE: ${{ inputs.image }}
           VERSION: ${{ steps.tag.outputs.version }}
         run: |
-          sha7=$(echo "$GITHUB_SHA" | cut -c1-7)
-          if ! docker buildx imagetools create --tag "${IMAGE}:${VERSION}" "${IMAGE}:${sha7}"; then
-            echo "::error::No artifact ${IMAGE}:${sha7} in DOCR — the Build workflow has not pushed this commit. Dispatch Build, then re-run."
-            exit 1
-          fi
+          set -uo pipefail
+          sha="$GITHUB_SHA"
+          for _ in $(seq 1 10); do
+            sha7=$(echo "$sha" | cut -c1-7)
+            if docker buildx imagetools create --tag "${IMAGE}:${VERSION}" "${IMAGE}:${sha7}"; then
+              if [ "$sha" != "$GITHUB_SHA" ]; then
+                echo "::notice::${GITHUB_SHA:0:7} has no artifact; used ${sha7}, reached over kustomization-only commits."
+              fi
+              exit 0
+            fi
+            if ! parent=$(git rev-parse -q --verify "${sha}^"); then
+              break
+            fi
+            if [ -n "$(git diff --name-only "$parent" "$sha" -- . ':(exclude)*kustomization.yaml')" ]; then
+              break
+            fi
+            sha="$parent"
+          done
+          echo "::error::No artifact ${IMAGE}:${GITHUB_SHA:0:7} in DOCR, and no ancestor reachable over kustomization-only commits has one. The Build workflow has not pushed this commit. Dispatch Build, then re-run."
+          exit 1
 
       # One commit, N files. The Contents API writes one file per call, so N
       # overlays would be N commits — a tag on a tree where only some overlays
@@ -170,9 +199,11 @@ jobs:
           echo "sha=${commit}" >> "$GITHUB_OUTPUT"
           echo "Pinned \`${OVERLAYS}\` to \`${VERSION}\` in \`${commit:0:7}\`." >> "$GITHUB_STEP_SUMMARY"
 
-      # Tag the commit only after the image exists. gh release create --target
-      # mints the tag + release in one call; the no-release path uses the git
-      # refs API. Either way no `git push`, so the checkout stays credential-less.
+      # Tag the commit only after the image exists, and always via the refs API
+      # rather than `gh release create --target`: with pin-overlays the target is
+      # a commit no branch reaches, and the refs API is the documented way to
+      # point at one. The Release then hangs off the tag that already exists.
+      # Either way no `git push`, so the checkout stays credential-less.
       - name: Tag the version (+ GitHub Release)
         if: steps.tag.outputs.build == 'true'
         env:
@@ -181,13 +212,18 @@ jobs:
           # The pinned child when pin-overlays is set, $GITHUB_SHA otherwise.
           TARGET_SHA: ${{ steps.pin.outputs.sha || github.sha }}
         run: |
+          set -euo pipefail
+          # Read before the tag exists: gh release list ignores tags, but keep the
+          # order obvious for the next reader.
+          prev=""
           if [ "$MAKE_RELEASE" = "true" ]; then
             prev=$(gh release list --exclude-pre-releases --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName // ""')
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$VERSION" -f sha="$TARGET_SHA" >/dev/null
+          if [ "$MAKE_RELEASE" = "true" ]; then
             if [ -n "$prev" ]; then
-              gh release create "$VERSION" --target "$TARGET_SHA" --title "$VERSION" --generate-notes --notes-start-tag "$prev"
+              gh release create "$VERSION" --title "$VERSION" --generate-notes --notes-start-tag "$prev"
             else
-              gh release create "$VERSION" --target "$TARGET_SHA" --title "$VERSION" --generate-notes
+              gh release create "$VERSION" --title "$VERSION" --generate-notes
             fi
-          else
-            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$VERSION" -f sha="$TARGET_SHA" >/dev/null
           fi

@@ -1,16 +1,12 @@
 name: Promote
 
 # Reusable: promote-many's "deploy a version to one target" half. Independently
-# dispatchable — release once, then promote to each target deliberately. Which
-# mode a service uses follows from what its Application's targetRevision names:
+# dispatchable — release once, then promote to each target deliberately. Pick the
+# mode from what the Application's targetRevision names: `bump` for the default
+# branch, `move-ref` for a deploy ref.
 #
-#   bump      the default branch  → rewrite the overlay's newTag there (Contents
-#                                   API). Rollback = revert the bump commit.
-#   move-ref  a deploy ref        → point refs/heads/<ref> at the released
-#                                   commit. Rollback = move the ref back.
-#
-# The write is made with a dedicated GitHub App's token; that App must be a
-# bypass actor on the default branch's ruleset. Design rationale:
+# The write uses a dedicated GitHub App's token; that App must be a bypass actor
+# on the default branch's ruleset. Design rationale:
 # docs/superpowers/specs/2026-07-14-auto-calver-and-direct-promote-design.md
 
 on:
