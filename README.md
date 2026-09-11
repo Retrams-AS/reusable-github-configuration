@@ -188,6 +188,12 @@ basename:
 Locally, `aws s3 cp` the same object into the folder and build as usual. Reference
 implementation: `rmrs-compose`, `2D-camera/OMRON_SENTECH`.
 
+`image-irrelevant-paths` lets a caller drop its push path filter without paying for
+a build on every doc or manifest commit: when every path changed since the parent
+commit is in that set, the parent's `<sha7>` artifact is retagged instead. A parent
+with no artifact falls back to a normal build. The `sha7` output names whatever the
+image ended up tagged with. See "Manifests and image from one revision" below.
+
 ### Release (CalVer) (`release_calver.yml`)
 
 Mints a CalVer `YYYY-MM.N` version by retagging the existing `<image>:<sha7>`
@@ -201,6 +207,12 @@ tag reuses that version instead of minting a new one, so re-runs are safe.
 Either way the resolved version is exposed as the `version` **output** — chain
 `promote` on it (see below). Pass `version` explicitly only for a deliberate
 override.
+
+`pin-overlays` changes which commit gets tagged: instead of `$GITHUB_SHA`, the tag
+lands on a child carrying `newTag: "<version>"` in the listed overlays, so the tag
+names its own image. Without it a tag names the *previous* image, because the
+promote bump has always landed after the tag. The image is still retagged from
+`$GITHUB_SHA`'s `sha7`. See "Manifests and image from one revision" below.
 
 **Usage in another repository** (with a chained promote to dev):
 
@@ -261,6 +273,99 @@ jobs:
       app-id: ${{ secrets.RELEASE_APP_ID }}
       app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 ```
+
+`mode: move-ref` is the other half, for an Application whose `targetRevision` is
+a deploy ref instead of the default branch. It points `refs/heads/<ref>` at the
+commit `version` names and commits nothing:
+
+```yaml
+    with:
+      mode: move-ref
+      ref: deploy/prod
+      version: "2026-09.1"
+```
+
+See "Manifests and image from one revision" below for when to reach for it.
+
+### Manifests and image from one revision
+
+An Argo Application that reads manifests from a branch and its image from a
+pinned `newTag` takes the two from different commits. Any commit changing a
+manifest *and* the code that manifest depends on breaks whichever environment it
+reaches first — a probe path moved on trunk 404s against an image released a
+month earlier. Three inputs across the workflows above close it. They are only
+useful together.
+
+**dev — latest on both halves.** Manifests already track the default branch, so
+only the image half needs fixing. Drop the push path filter so every commit has
+an artifact, and let Build pin the sha it just pushed:
+
+```yaml
+# .github/workflows/build.yml
+on:
+  pull_request:
+    paths-ignore: ["README.md", "k8s/**", "docs/**"]   # a PR needs no artifact
+  push:
+    branches: [master]                                  # no filter: every commit gets one
+  workflow_dispatch:
+jobs:
+  build:
+    permissions: { contents: read, id-token: write }
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/build-and-push-docr.yml@v3
+    with:
+      image: registry.digitalocean.com/the-retrams-registry/<service>
+      push: ${{ github.event_name != 'pull_request' }}
+      image-irrelevant-paths: "k8s/** docs/** README.md .github/**"
+    secrets:
+      DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
+
+  pin-dev:
+    needs: build
+    if: github.event_name == 'push'
+    permissions: {}
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/promote.yml@v3
+    with:
+      target: k8s/overlays/dev
+      version: ${{ needs.build.outputs.sha7 }}
+    secrets:
+      app-id: ${{ secrets.RELEASE_APP_ID }}
+      app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+```
+
+Dropping the filter costs nothing: `image-irrelevant-paths` makes a doc- or
+manifest-only commit retag its parent's artifact rather than rebuild. dev needs
+no deploy ref, and its Application keeps `targetRevision: master`.
+
+**prod — pinned to the CalVer tag.** Release writes `newTag` into the overlay
+*inside* the commit it tags, so the tag names its own image:
+
+```yaml
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/release_calver.yml@v3
+    with:
+      image: registry.digitalocean.com/the-retrams-registry/<service>
+      pin-overlays: "k8s/overlays/prod"
+```
+
+Then `promote` with `mode: move-ref` points `deploy/prod` at that tag, and the
+Application names `deploy/prod` once and never learns a version number again.
+
+Three things to get right:
+
+- **`pin-dev` must not run on `pull_request`.** There is no default branch to
+  write to, and the job would fail on every PR.
+- **List every directory the image genuinely ignores** in
+  `image-irrelevant-paths`. Anything missing costs a rebuild, not correctness —
+  the check is that *every* changed path is ignorable, so an unlisted directory
+  falls through to a real build. The converse is the real trap: listing
+  `.github/**` means a commit that only changes build configuration (`platforms`,
+  `context`, the pinned workflow sha) retags instead of applying it, and the new
+  config lands on the next real build.
+- **A bump commit is a pointer, not a version.** `pin-dev` writes a `newTag` and
+  nothing else, so it has no artifact and carries `[skip ci]` because there is
+  nothing to build — the merge commit beneath it is what the release is *of*.
+  `release_calver.yml` resolves back across such commits on its own, so
+  dispatching Release at the branch tip is correct even though that tip is
+  usually a bump.
 
 ### Publish Python package (`publish-python-package.yml`)
 
