@@ -188,6 +188,22 @@ basename:
 Locally, `aws s3 cp` the same object into the folder and build as usual. Reference
 implementation: `rmrs-compose`, `2D-camera/OMRON_SENTECH`.
 
+`build-args` lets one parameterised Dockerfile produce several images, the caller varying
+them per matrix entry:
+
+```yaml
+    with:
+      image: registry.digitalocean.com/the-retrams-registry/dros-motion-planning-moveit-tm2
+      build-args: |
+        CONFIG_REPO=https://github.com/TechmanRobotInc/tm2_ros2.git
+        CONFIG_COMMIT=9c087f6
+```
+
+Build args are readable by anyone who can pull the image, so secrets do not go here — use
+`private-index` or a BuildKit secret. The gha cache is scoped per image basename, so matrix
+entries sharing a Dockerfile do not evict each other. Reference implementation:
+`rmrs-compose`, `motion-planning/moveit`, which builds one planner per arm config set.
+
 `image-irrelevant-paths` lets a caller drop its push path filter without paying for
 a build on every doc or manifest commit: when every path changed since the parent
 commit is in that set, the parent's `<sha7>` artifact is retagged instead. A parent
