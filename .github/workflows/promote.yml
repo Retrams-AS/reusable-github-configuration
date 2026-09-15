@@ -2,8 +2,9 @@ name: Promote
 
 # Reusable: promote-many's "deploy a version to one target" half. Independently
 # dispatchable — release once, then promote to each target deliberately. Pick the
-# mode from what the Application's targetRevision names: `bump` for the default
-# branch, `move-ref` for a deploy ref.
+# mode from where the Application gets its revision: `bump` when it tracks the
+# default branch and only the image moves, `channel` when an ApplicationSet reads
+# the version out of a channels file in this repo.
 #
 # The write uses a dedicated GitHub App's token; that App must be a bypass actor
 # on the default branch's ruleset. Design rationale:
@@ -19,20 +20,23 @@ on:
         default: ""
       version:
         description: >-
-          mode=bump — the value written to newTag. A CalVer for a release, or a
-          7-char sha when Build pins a dev overlay; not validated here, since
-          release_calver owns the CalVer regex.
-          mode=move-ref — the tag or sha the ref is moved onto.
+          The version to write. A CalVer for a release, or a 7-char sha when Build
+          pins a dev overlay; not validated here, since release_calver owns the
+          CalVer regex.
         required: true
         type: string
       mode:
         description: >-
           `bump` rewrites the overlay's newTag on the default branch.
-          `move-ref` force-updates refs/heads/<ref> to the commit `version` names.
+          `channel` sets a key in the channels file on the default branch.
         type: string
         default: bump
-      ref:
-        description: Branch to move when mode is move-ref, e.g. deploy/prod
+      channel-file:
+        description: Path to the channels file, relative to the repo root (mode=channel only)
+        type: string
+        default: k8s/channels.yaml
+      channel:
+        description: Key in the channels file to set, e.g. prod (mode=channel only)
         type: string
         default: ""
     secrets:
@@ -52,7 +56,7 @@ jobs:
     # Serialize promotes to the same target so two dispatches can't race the
     # read-modify-write.
     concurrency:
-      group: promote-${{ inputs.mode }}-${{ inputs.target }}${{ inputs.ref }}
+      group: promote-${{ inputs.mode }}-${{ inputs.target }}${{ inputs.channel }}
     steps:
       # A typo in mode would otherwise run neither step and report success.
       - name: Validate mode
@@ -60,8 +64,8 @@ jobs:
           MODE: ${{ inputs.mode }}
         run: |
           case "$MODE" in
-            bump|move-ref) ;;
-            *) echo "::error::mode must be 'bump' or 'move-ref', got '${MODE}'."; exit 1 ;;
+            bump|channel) ;;
+            *) echo "::error::mode must be 'bump' or 'channel', got '${MODE}'."; exit 1 ;;
           esac
 
       # Pinned create-github-app-token v3.2.0, token scoped to the minimum
@@ -116,28 +120,44 @@ jobs:
             -f branch="$DEFAULT_BRANCH" > /dev/null
           echo "Promoted \`${TARGET}\` to \`${VERSION}\` on \`${DEFAULT_BRANCH}\`." >> "$GITHUB_STEP_SUMMARY"
 
-      # force, because deploy/<env> moves between release tags whose commits are
-      # not descendants of each other. Created on first use, so a service's
-      # first promote does not need a hand-made branch.
-      - name: Move the deploy ref
-        if: inputs.mode == 'move-ref'
+      # The key must already exist. Creating it on demand would let a typo add
+      # `prd:` and report success while the real channel never moves.
+      - name: Set the channel on the default branch
+        if: inputs.mode == 'channel'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
-          REF: ${{ inputs.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          FILE: ${{ inputs.channel-file }}
+          CHANNEL: ${{ inputs.channel }}
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          [ -n "$REF" ] || { echo "::error::mode=move-ref needs a ref input."; exit 1; }
-          if ! sha=$(gh api "repos/${REPO}/commits/${VERSION}" --jq .sha); then
-            echo "::error::${VERSION} does not resolve to a commit in ${REPO} — has it been released?"
+          [ -n "$CHANNEL" ] || { echo "::error::mode=channel needs a channel input."; exit 1; }
+
+          if ! resp=$(gh api "repos/${REPO}/contents/${FILE}?ref=${DEFAULT_BRANCH}"); then
+            echo "::error::${FILE} not found on ${DEFAULT_BRANCH}."
             exit 1
           fi
-          if gh api "repos/${REPO}/git/ref/heads/${REF}" >/dev/null 2>&1; then
-            gh api --method PATCH "repos/${REPO}/git/refs/heads/${REF}" \
-              -f sha="$sha" -F force=true > /dev/null
-          else
-            gh api --method POST "repos/${REPO}/git/refs" \
-              -f ref="refs/heads/${REF}" -f sha="$sha" > /dev/null
+          blob_sha=$(jq -r .sha <<< "$resp")
+          jq -r .content <<< "$resp" | base64 -d > current.yaml
+
+          if [ "$(yq "has(\"${CHANNEL}\")" current.yaml)" != "true" ]; then
+            echo "::error::${FILE} has no '${CHANNEL}' key. Add it before promoting."
+            exit 1
           fi
-          echo "Moved \`${REF}\` to \`${VERSION}\` (\`${sha:0:7}\`)." >> "$GITHUB_STEP_SUMMARY"
+          cp current.yaml previous.yaml
+          VERSION="$VERSION" yq -i ".\"${CHANNEL}\" = strenv(VERSION)" current.yaml
+          if cmp -s previous.yaml current.yaml; then
+            echo "${CHANNEL} is already at ${VERSION}; nothing to promote."
+            exit 0
+          fi
+
+          # [skip ci]: App-token commits do trigger workflows, and a channel bump
+          # has nothing for CI to check.
+          gh api --method PUT "repos/${REPO}/contents/${FILE}" \
+            -f message="release: set ${CHANNEL} to ${VERSION} [skip ci]" \
+            -f content="$(base64 -w0 current.yaml)" \
+            -f sha="$blob_sha" \
+            -f branch="$DEFAULT_BRANCH" > /dev/null
+          echo "Set \`${CHANNEL}\` to \`${VERSION}\` in \`${FILE}\` on \`${DEFAULT_BRANCH}\`." >> "$GITHUB_STEP_SUMMARY"
