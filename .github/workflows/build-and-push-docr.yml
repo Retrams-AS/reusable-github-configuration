@@ -87,6 +87,16 @@ on:
           required.
         type: string
         default: ""
+      build-args:
+        description: >-
+          Newline-separated KEY=VALUE build arguments. Lets one parameterised
+          Dockerfile produce several images, the caller varying these per matrix
+          entry -- rmrs-compose builds its MoveIt planner once per arm config
+          set this way. Build args land in the image's build history and are
+          readable by anyone who can pull it, so never pass a secret here; use
+          private-index or a BuildKit secret.
+        type: string
+        default: ""
       image-irrelevant-paths:
         description: >-
           Space-separated git pathspecs the image does not depend on, e.g.
@@ -118,23 +128,13 @@ jobs:
     outputs:
       sha7: ${{ steps.sha.outputs.sha7 }}
     permissions:
-      # contents: read is not optional. Declaring a permissions block at all
-      # replaces the default token outright, so it must stay explicit here or
-      # checkout breaks even though we're only adding id-token below.
+      # Not optional: this block replaces the default token, and checkout needs it.
       contents: read
-      # Exchanged with OpenBao for the index token, but only when private-index
-      # is true. Granted unconditionally because permissions are static per job:
-      # there is no way to scope this to the runs that use it without a second
-      # job, and a second job cannot hand credentials over -- the whole design
-      # rests on the mint step's netrc file being handed to a later step in this
-      # same job. Accepted: this makes ACTIONS_ID_TOKEN_REQUEST_* readable by
-      # every step, including docr-login and the docker build-push-action
-      # invocation. The exposure is bounded by what the token can buy -- the
-      # OpenBao role behind the action's defaults is read-only and binds
-      # repository_owner, so it grants no more than any org developer already
-      # has -- and the OIDC token itself never crosses into the build: only the
-      # resulting netrc does, as a BuildKit secret.
-      id-token: write # OIDC subject exchanged with OpenBao, only when private-index
+      # Unconditional though only private-index spends it, because permissions are
+      # static per job and the mint step hands its netrc to a later step in this same
+      # job. Bounded: the OpenBao role is read-only and binds repository_owner, and
+      # only the netrc crosses into the build, never this token.
+      id-token: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -143,9 +143,16 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
-      - name: Compute sha tag
+      # Cache scope per image: matrix entries sharing a Dockerfile would otherwise
+      # share the branch-default scope and evict each other under mode=max.
+      - name: Compute sha tag and cache scope
         id: sha
-        run: echo "sha7=$(echo "$GITHUB_SHA" | cut -c1-7)" >> "$GITHUB_OUTPUT"
+        env:
+          IMAGE: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+          echo "sha7=$(echo "$GITHUB_SHA" | cut -c1-7)" >> "$GITHUB_OUTPUT"
+          echo "scope=${IMAGE##*/}" >> "$GITHUB_OUTPUT"
 
       # Retag only when EVERY changed path is ignorable. Phrased the other way
       # round, a commit touching both k8s/ and app/ would ship stale code; this
@@ -260,9 +267,8 @@ jobs:
           platforms: ${{ inputs.platforms }}
           push: ${{ inputs.push }}
           tags: ${{ inputs.image }}:${{ steps.sha.outputs.sha7 }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          # secret-files, not secrets: the `secrets` input is a CSV-ish KEY=VALUE
-          # list and a three-line netrc breaks its parsing at build time. Empty
-          # when the mint step was skipped, which build-push-action ignores.
+          build-args: ${{ inputs.build-args }}
+          cache-from: type=gha,scope=${{ steps.sha.outputs.scope }}
+          cache-to: type=gha,mode=max,scope=${{ steps.sha.outputs.scope }}
+          # secret-files, not secrets: a three-line netrc breaks that input's parsing.
           secret-files: ${{ steps.index-token.outputs.netrc-file && format('netrc={0}', steps.index-token.outputs.netrc-file) || '' }}
