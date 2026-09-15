@@ -290,16 +290,20 @@ jobs:
       app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 ```
 
-`mode: move-ref` is the other half, for an Application whose `targetRevision` is
-a deploy ref instead of the default branch. It points `refs/heads/<ref>` at the
-commit `version` names and commits nothing:
+`mode: channel` is the other half, for an environment whose Application gets its
+revision from an ApplicationSet reading a channels file rather than tracking the
+default branch. It sets one key in that file:
 
 ```yaml
     with:
-      mode: move-ref
-      ref: deploy/prod
+      mode: channel
+      channel: prod
       version: "2026-09.1"
+      # channel-file defaults to k8s/channels.yaml
 ```
+
+The key must already exist — a typo is an error rather than a new key nobody
+reads.
 
 See "Manifests and image from one revision" below for when to reach for it.
 
@@ -362,8 +366,30 @@ no deploy ref, and its Application keeps `targetRevision: master`.
       pin-overlays: "k8s/overlays/prod"
 ```
 
-Then `promote` with `mode: move-ref` points `deploy/prod` at that tag, and the
-Application names `deploy/prod` once and never learns a version number again.
+Then `promote` with `mode: channel, channel: prod` writes that version into
+`k8s/channels.yaml`, which an ApplicationSet in `digital_ocean_deployment` reads:
+
+```yaml
+# <service>/k8s/channels.yaml — the service owns this
+prod: 2026-09.1        # dev has no entry; it tracks master
+```
+
+```yaml
+# digital_ocean_deployment — written once per service, names no version
+generators:
+  - git:
+      repoURL: …/<service>.git
+      revision: HEAD
+      files: [{ path: k8s/channels.yaml }]
+template:
+  spec:
+    source:
+      targetRevision: '{{.prod}}'
+      path: k8s/overlays/prod
+```
+
+Nothing writes a version into the infra repo, and `channels.yaml` says in git
+which release prod is on.
 
 Three things to get right:
 
