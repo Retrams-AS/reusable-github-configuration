@@ -1,10 +1,5 @@
 name: Release
 
-# Consumer template — copy into .github/workflows/ and edit the marked values.
-# Mints a CalVer version from the sha artifact Build already pushed, then
-# promotes prod to it in the same run. The contract is in this repo's README,
-# under "Manifests and image from one revision".
-
 on:
   workflow_dispatch:
     inputs:

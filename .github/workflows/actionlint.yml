@@ -76,10 +76,7 @@ jobs:
           uvx --from shellcheck-py==0.11.0.1
           shellcheck ._shared/.github/scripts/*/*.sh
 
-      # actionlint walks .github/workflows from the repo root and never sees
-      # .github/consumer-template, so these are passed as file arguments — which
-      # makes it lint only them. Paths go through ._shared for the same reason
-      # the shellcheck step above does: a caller's tree has no template.
+      # Named explicitly: actionlint walks .github/workflows and never sees these.
       - name: Actionlint the consumer template
         run: >-
           uvx --from actionlint-py==1.7.12.24 --with shellcheck-py==0.11.0.1 actionlint
