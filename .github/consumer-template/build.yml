@@ -1,0 +1,37 @@
+name: Build
+
+# Consumer template — copy into .github/workflows/ and edit the marked values.
+# Builds every push and PR, and pins dev's overlay to the sha it just built.
+# See docs/superpowers/specs/2026-07-14-auto-calver-and-direct-promote-design.md
+# in reusable-github-configuration for the contract this encodes.
+
+on:
+  pull_request:
+    paths-ignore: ["README.md", "k8s/**", "docs/**"] # a PR needs no artifact
+  push:
+    branches: [main] # EDIT: this repo's default branch (main or master)
+  workflow_dispatch:
+
+jobs:
+  build:
+    permissions:
+      contents: read
+      id-token: write
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/build-and-push-docr.yml@0000000000000000000000000000000000000000 # v5.0.0 — replace with the tagged sha
+    with:
+      image: registry.digitalocean.com/the-retrams-registry/CHANGEME # EDIT: this service's image ref
+      push: ${{ github.event_name != 'pull_request' }}
+    secrets:
+      DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
+
+  pin-dev:
+    needs: build
+    if: github.event_name == 'push' # a pull_request run has no default branch to write to
+    permissions: {}
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/promote.yml@0000000000000000000000000000000000000000 # v5.0.0 — replace with the tagged sha
+    with:
+      target: k8s/overlays/dev # EDIT: this service's dev overlay path
+      version: ${{ needs.build.outputs.sha7 }}
+    secrets:
+      app-id: ${{ secrets.RELEASE_APP_ID }}
+      app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}

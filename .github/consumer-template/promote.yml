@@ -1,0 +1,27 @@
+name: Promote
+
+# Consumer template — copy into .github/workflows/ and edit the marked values.
+# Moves prod to a version that already has a tag — a rollback, or a promotion
+# split from its release. Not for cutting a new version; that's release.yml.
+# See docs/superpowers/specs/2026-07-14-auto-calver-and-direct-promote-design.md
+# in reusable-github-configuration for the contract this encodes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Already-tagged CalVer version to promote to, YYYY-MM.N
+        required: true
+        type: string
+
+jobs:
+  promote:
+    permissions: {}
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/promote.yml@0000000000000000000000000000000000000000 # v5.0.0 — replace with the tagged sha
+    with:
+      target: k8s/overlays/prod # EDIT: this service's prod overlay path
+      channel: prod # EDIT: this service's channel key
+      version: ${{ inputs.version }}
+    secrets:
+      app-id: ${{ secrets.RELEASE_APP_ID }}
+      app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}

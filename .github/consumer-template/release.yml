@@ -1,0 +1,45 @@
+name: Release
+
+# Consumer template — copy into .github/workflows/ and edit the marked values.
+# Mints a CalVer version from the sha artifact Build already pushed, then
+# promotes prod to it in the same run. See
+# docs/superpowers/specs/2026-07-14-auto-calver-and-direct-promote-design.md
+# in reusable-github-configuration for the contract this encodes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: CalVer version to mint, YYYY-MM.N. Omit to auto-mint.
+        required: false
+        type: string
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/release_calver.yml@0000000000000000000000000000000000000000 # v5.0.0 — replace with the tagged sha
+    with:
+      image: registry.digitalocean.com/the-retrams-registry/CHANGEME # EDIT: this service's image ref
+      version: ${{ inputs.version }}
+      create-tag: false # promote lands the commit the tag must sit on; see below
+    secrets:
+      DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
+
+  # make-github-release is left at its default (true) rather than set here.
+  # create-tag: false above already suppresses the Release; setting
+  # make-github-release explicitly would invite someone to flip create-tag
+  # back later and silently lose it.
+  promote:
+    needs: release
+    permissions: {}
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/promote.yml@0000000000000000000000000000000000000000 # v5.0.0 — replace with the tagged sha
+    with:
+      target: k8s/overlays/prod # EDIT: this service's prod overlay path
+      channel: prod # EDIT: this service's channel key
+      version: ${{ needs.release.outputs.version }}
+      tag: ${{ needs.release.outputs.version }}
+      github-release: true
+    secrets:
+      app-id: ${{ secrets.RELEASE_APP_ID }}
+      app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
