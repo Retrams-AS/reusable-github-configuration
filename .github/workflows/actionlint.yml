@@ -71,6 +71,20 @@ jobs:
           path: ._shared
           persist-credentials: false
 
+      - name: Shellcheck the extracted scripts
+        run: >-
+          uvx --from shellcheck-py==0.11.0.1
+          shellcheck ._shared/.github/scripts/*/*.sh
+
+      # Named explicitly: actionlint walks .github/workflows and never sees these.
+      - name: Actionlint the consumer template
+        run: >-
+          uvx --from actionlint-py==1.7.12.24 --with shellcheck-py==0.11.0.1 actionlint
+          -ignore 'property "workflow_(repository|sha)" is not defined'
+          ._shared/.github/consumer-template/build.yml
+          ._shared/.github/consumer-template/release.yml
+          ._shared/.github/consumer-template/promote.yml
+
       # actionlint does not read action.yml at all, so the composite actions —
       # including the OpenBao token exchange — are otherwise unchecked. The
       # script resolves `.github/actions` relative to the working directory

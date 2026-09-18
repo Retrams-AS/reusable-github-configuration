@@ -1,10 +1,11 @@
 name: Promote
 
 # Reusable: promote-many's "deploy a version to one target" half. Independently
-# dispatchable — release once, then promote to each target deliberately. Pick the
-# mode from where the Application gets its revision: `bump` when it tracks the
-# default branch and only the image moves, `channel` when an ApplicationSet reads
-# the version out of a channels file in this repo.
+# dispatchable — release once, then promote to each target deliberately. Set
+# `target` when the Application tracks the default branch and only the image
+# moves, `channel` when an ApplicationSet reads the version out of a channels
+# file in this repo. Both may be set together: both pointers land in one
+# commit.
 #
 # The write uses a dedicated GitHub App's token; that App must be a bypass actor
 # on the default branch's ruleset. Design rationale:
@@ -14,7 +15,7 @@ on:
   workflow_call:
     inputs:
       target:
-        description: Overlay path whose newTag to bump, e.g. k8s/overlays/prod (mode=bump only)
+        description: Overlay path whose newTag to bump, e.g. k8s/overlays/prod
         required: false
         type: string
         default: ""
@@ -25,20 +26,22 @@ on:
           CalVer regex.
         required: true
         type: string
-      mode:
-        description: >-
-          `bump` rewrites the overlay's newTag on the default branch.
-          `channel` sets a key in the channels file on the default branch.
-        type: string
-        default: bump
       channel-file:
-        description: Path to the channels file, relative to the repo root (mode=channel only)
+        description: Path to the channels file, relative to the repo root (channel only)
         type: string
         default: k8s/channels.yaml
       channel:
-        description: Key in the channels file to set, e.g. prod (mode=channel only)
+        description: Key in the channels file to set, e.g. prod
         type: string
         default: ""
+      tag:
+        description: When set, create refs/tags/<tag> at the commit this run produces.
+        type: string
+        default: ""
+      github-release:
+        description: Cut a GitHub Release for the tag (tag only)
+        type: boolean
+        default: false
     secrets:
       app-id:
         description: ID of the GitHub App that is a bypass actor on the default-branch ruleset.
@@ -52,21 +55,34 @@ permissions: {}
 jobs:
   promote:
     runs-on: ubuntu-latest
-    permissions: {}
+    # contents: read is for the ._shared checkout only — declaring any block
+    # replaces the default token outright, and checkout needs a scope. Every
+    # write this job makes goes through the App token, not this one.
+    permissions:
+      contents: read
     # Serialize promotes to the same target so two dispatches can't race the
     # read-modify-write.
     concurrency:
-      group: promote-${{ inputs.mode }}-${{ inputs.target }}${{ inputs.channel }}
+      group: promote-${{ inputs.target }}${{ inputs.channel }}
     steps:
-      # A typo in mode would otherwise run neither step and report success.
-      - name: Validate mode
+      - name: Checkout shared scripts at the called ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: ._shared
+          persist-credentials: false
+
+      # A run with neither input would otherwise write nothing and report success.
+      - name: Validate inputs
         env:
-          MODE: ${{ inputs.mode }}
+          TARGET: ${{ inputs.target }}
+          CHANNEL: ${{ inputs.channel }}
         run: |
-          case "$MODE" in
-            bump|channel) ;;
-            *) echo "::error::mode must be 'bump' or 'channel', got '${MODE}'."; exit 1 ;;
-          esac
+          if [ -z "$TARGET" ] && [ -z "$CHANNEL" ]; then
+            echo "::error::promote needs a target and/or channel input; neither was set."
+            exit 1
+          fi
 
       # Pinned create-github-app-token v3.2.0, token scoped to the minimum
       # (contents write). The App is an intentional ruleset bypass actor (see
@@ -80,84 +96,34 @@ jobs:
           private-key: ${{ secrets.app-private-key }}
           permission-contents: write
 
-      - name: Bump newTag on the default branch
-        if: inputs.mode == 'bump'
+      - name: Write pointers
+        id: write
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           TARGET: ${{ inputs.target }}
-          VERSION: ${{ inputs.version }}
-        run: |
-          set -euo pipefail
-          [ -n "$TARGET" ] || { echo "::error::mode=bump needs a target input."; exit 1; }
-          name=$(basename "$TARGET")
-          file="${TARGET}/kustomization.yaml"
-
-          # Read the file from the default-branch tip (not the dispatched ref)
-          # so the update replaces exactly what it read.
-          if ! resp=$(gh api "repos/${REPO}/contents/${file}?ref=${DEFAULT_BRANCH}"); then
-            echo "::error::${file} not found on ${DEFAULT_BRANCH} — is '${TARGET}' the right overlay path?"
-            exit 1
-          fi
-          blob_sha=$(jq -r .sha <<< "$resp")
-          jq -r .content <<< "$resp" | base64 -d > current.yaml
-
-          sed -E "s|(newTag: \")[^\"]*(\")|\1${VERSION}\2|" current.yaml > bumped.yaml
-          grep -q "newTag: \"${VERSION}\"" bumped.yaml \
-            || { echo "::error::${file} has no quoted newTag line to bump."; exit 1; }
-          if cmp -s current.yaml bumped.yaml; then
-            echo "${TARGET} is already at ${VERSION}; nothing to promote."
-            exit 0
-          fi
-
-          # [skip ci]: App-token commits, unlike GITHUB_TOKEN ones, do trigger
-          # workflows, and a tag bump has nothing for CI to check.
-          gh api --method PUT "repos/${REPO}/contents/${file}" \
-            -f message="release: bump ${name} to ${VERSION} [skip ci]" \
-            -f content="$(base64 -w0 bumped.yaml)" \
-            -f sha="$blob_sha" \
-            -f branch="$DEFAULT_BRANCH" > /dev/null
-          echo "Promoted \`${TARGET}\` to \`${VERSION}\` on \`${DEFAULT_BRANCH}\`." >> "$GITHUB_STEP_SUMMARY"
-
-      # The key must already exist. Creating it on demand would let a typo add
-      # `prd:` and report success while the real channel never moves.
-      - name: Set the channel on the default branch
-        if: inputs.mode == 'channel'
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          REPO: ${{ github.repository }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          FILE: ${{ inputs.channel-file }}
+          CHANNEL_FILE: ${{ inputs.channel-file }}
           CHANNEL: ${{ inputs.channel }}
           VERSION: ${{ inputs.version }}
-        run: |
-          set -euo pipefail
-          [ -n "$CHANNEL" ] || { echo "::error::mode=channel needs a channel input."; exit 1; }
+          TAG: ${{ inputs.tag }}
+        run: bash ._shared/.github/scripts/promote/write-pointers.sh
 
-          if ! resp=$(gh api "repos/${REPO}/contents/${FILE}?ref=${DEFAULT_BRANCH}"); then
-            echo "::error::${FILE} not found on ${DEFAULT_BRANCH}."
-            exit 1
-          fi
-          blob_sha=$(jq -r .sha <<< "$resp")
-          jq -r .content <<< "$resp" | base64 -d > current.yaml
+      - name: Fast-forward the default branch
+        id: land
+        if: steps.write.outputs.commit != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          COMMIT: ${{ steps.write.outputs.commit }}
+        run: bash ._shared/.github/scripts/promote/fast-forward.sh
 
-          if [ "$(yq "has(\"${CHANNEL}\")" current.yaml)" != "true" ]; then
-            echo "::error::${FILE} has no '${CHANNEL}' key. Add it before promoting."
-            exit 1
-          fi
-          cp current.yaml previous.yaml
-          VERSION="$VERSION" yq -i ".\"${CHANNEL}\" = strenv(VERSION)" current.yaml
-          if cmp -s previous.yaml current.yaml; then
-            echo "${CHANNEL} is already at ${VERSION}; nothing to promote."
-            exit 0
-          fi
-
-          # [skip ci]: App-token commits do trigger workflows, and a channel bump
-          # has nothing for CI to check.
-          gh api --method PUT "repos/${REPO}/contents/${FILE}" \
-            -f message="release: set ${CHANNEL} to ${VERSION} [skip ci]" \
-            -f content="$(base64 -w0 current.yaml)" \
-            -f sha="$blob_sha" \
-            -f branch="$DEFAULT_BRANCH" > /dev/null
-          echo "Set \`${CHANNEL}\` to \`${VERSION}\` in \`${FILE}\` on \`${DEFAULT_BRANCH}\`." >> "$GITHUB_STEP_SUMMARY"
+      - name: Tag the commit
+        if: inputs.tag != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          TARGET_SHA: ${{ steps.write.outputs.commit || github.sha }}
+          GITHUB_RELEASE: ${{ inputs.github-release }}
+        run: bash ._shared/.github/scripts/promote/tag-and-release.sh

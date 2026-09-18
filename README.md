@@ -224,33 +224,14 @@ Either way the resolved version is exposed as the `version` **output** — chain
 `promote` on it (see below). Pass `version` explicitly only for a deliberate
 override.
 
-`pin-overlays` changes which commit gets tagged: instead of `$GITHUB_SHA`, the tag
-lands on a child carrying `newTag: "<version>"` in the listed overlays, so the tag
-names its own image. Without it a tag names the *previous* image, because the
-promote bump has always landed after the tag. The image is still retagged from
-`$GITHUB_SHA`'s `sha7`. See "Manifests and image from one revision" below.
+`create-tag` (default `true`) creates `refs/tags/<version>` at `$GITHUB_SHA`.
+Set it `false` when the caller chains `promote` straight after: `promote` lands
+its own commit and tags that instead, so the tag names the commit carrying the
+version rather than the one before it. See "Manifests and image from one
+revision" below for that chain.
 
-**Usage in another repository** (with a chained promote to dev):
-
-```yaml
-jobs:
-  release:
-    uses: Retrams-AS/reusable-github-configuration/.github/workflows/release_calver.yml@<commit-sha> # <version>
-    with:
-      image: registry.digitalocean.com/the-retrams-registry/<service>
-    secrets:
-      DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
-
-  promote-dev:
-    needs: release
-    uses: Retrams-AS/reusable-github-configuration/.github/workflows/promote.yml@<commit-sha> # <version>
-    with:
-      target: k8s/overlays/dev
-      version: ${{ needs.release.outputs.version }}
-    secrets:
-      app-id: ${{ secrets.RELEASE_APP_ID }}
-      app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-```
+See [`.github/consumer-template/`](.github/consumer-template/) for a caller,
+whether standalone or chained into `promote`.
 
 ### Promote (`promote.yml`)
 
@@ -276,36 +257,19 @@ build/test/lint don't run on it.
 5. Store the App ID and PEM as secrets (org-level with repo access, or
    per-repo): `RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY`.
 
-**Usage in another repository:**
-
-```yaml
-jobs:
-  promote:
-    uses: Retrams-AS/reusable-github-configuration/.github/workflows/promote.yml@<commit-sha> # <version>
-    with:
-      target: k8s/overlays/prod
-      version: "2026-06.1"
-    secrets:
-      app-id: ${{ secrets.RELEASE_APP_ID }}
-      app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-```
-
-`mode: channel` is the other half, for an environment whose Application gets its
-revision from an ApplicationSet reading a channels file rather than tracking the
-default branch. It sets one key in that file:
-
-```yaml
-    with:
-      mode: channel
-      channel: prod
-      version: "2026-09.1"
-      # channel-file defaults to k8s/channels.yaml
-```
-
+`target` bumps `images.newTag` in that overlay path, for an environment whose
+Application tracks the default branch. `channel` sets one key in a channels
+file (`channel-file`, default `k8s/channels.yaml`) instead, for an environment
+whose Application gets its revision from an ApplicationSet reading that file.
 The key must already exist — a typo is an error rather than a new key nobody
-reads.
+reads. Set both together to land both pointers in one commit — that's what
+`release.yml` in the consumer template does. `tag` creates
+`refs/tags/<tag>` at the commit this run produces, and `github-release: true`
+cuts a GitHub Release for it.
 
-See "Manifests and image from one revision" below for when to reach for it.
+See [`.github/consumer-template/`](.github/consumer-template/) for a caller,
+and "Manifests and image from one revision" below for when to reach for
+`channel`.
 
 ### Manifests and image from one revision
 
@@ -313,61 +277,19 @@ An Argo Application that reads manifests from a branch and its image from a
 pinned `newTag` takes the two from different commits. Any commit changing a
 manifest *and* the code that manifest depends on breaks whichever environment it
 reaches first — a probe path moved on trunk 404s against an image released a
-month earlier. Three inputs across the workflows above close it. They are only
-useful together.
+month earlier. The workflows above close it, and only together.
 
 **dev — latest on both halves.** Manifests already track the default branch, so
-only the image half needs fixing. Drop the push path filter so every commit has
-an artifact, and let Build pin the sha it just pushed:
+only the image half needs fixing: drop the push path filter so every commit has
+an artifact, and let Build pin the sha it just pushed.
 
-```yaml
-# .github/workflows/build.yml
-on:
-  pull_request:
-    paths-ignore: ["README.md", "k8s/**", "docs/**"]   # a PR needs no artifact
-  push:
-    branches: [master]                                  # no filter: every commit gets one
-  workflow_dispatch:
-jobs:
-  build:
-    permissions: { contents: read, id-token: write }
-    uses: Retrams-AS/reusable-github-configuration/.github/workflows/build-and-push-docr.yml@92f2142cb1837fffee0c72b121f090c1f8ad8782 # v3.0.0
-    with:
-      image: registry.digitalocean.com/the-retrams-registry/<service>
-      push: ${{ github.event_name != 'pull_request' }}
-      image-irrelevant-paths: "k8s/** docs/** README.md .github/**"
-    secrets:
-      DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
-
-  pin-dev:
-    needs: build
-    if: github.event_name == 'push'
-    permissions: {}
-    uses: Retrams-AS/reusable-github-configuration/.github/workflows/promote.yml@92f2142cb1837fffee0c72b121f090c1f8ad8782 # v3.0.0
-    with:
-      target: k8s/overlays/dev
-      version: ${{ needs.build.outputs.sha7 }}
-    secrets:
-      app-id: ${{ secrets.RELEASE_APP_ID }}
-      app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-```
-
-Dropping the filter costs nothing: `image-irrelevant-paths` makes a doc- or
-manifest-only commit retag its parent's artifact rather than rebuild. dev needs
-no deploy ref, and its Application keeps `targetRevision: master`.
-
-**prod — pinned to the CalVer tag.** Release writes `newTag` into the overlay
-*inside* the commit it tags, so the tag names its own image:
-
-```yaml
-    uses: Retrams-AS/reusable-github-configuration/.github/workflows/release_calver.yml@92f2142cb1837fffee0c72b121f090c1f8ad8782 # v3.0.0
-    with:
-      image: registry.digitalocean.com/the-retrams-registry/<service>
-      pin-overlays: "k8s/overlays/prod"
-```
-
-Then `promote` with `mode: channel, channel: prod` writes that version into
-`k8s/channels.yaml`, which an ApplicationSet in `digital_ocean_deployment` reads:
+**prod — pinned to the CalVer tag.** Release mints the version and retags the
+image, then hands over: `promote` writes the prod overlay's `newTag` and the
+`prod` key in `k8s/channels.yaml` into one commit, fast-forwards the default
+branch onto it, and tags that commit. So the tag is an ancestor of the branch
+and its own tree names its own image — neither is true if the two pointers are
+written separately or the tag is cut before them. An ApplicationSet in
+`digital_ocean_deployment` reads the channels file:
 
 ```yaml
 # <service>/k8s/channels.yaml — the service owns this
@@ -390,6 +312,12 @@ template:
 
 Nothing writes a version into the infra repo, and `channels.yaml` says in git
 which release prod is on.
+
+Copy `build.yml`, `release.yml` and `promote.yml` from
+[`.github/consumer-template/`](.github/consumer-template/) into
+`.github/workflows/`, then edit the values each file marks: the image ref, the
+overlay paths, the channel key, `image-irrelevant-paths`, and the default branch
+name in `build.yml`'s `push` trigger.
 
 Three things to get right:
 

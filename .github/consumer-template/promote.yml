@@ -1,0 +1,21 @@
+name: Promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Already-tagged CalVer version to promote to, YYYY-MM.N
+        required: true
+        type: string
+
+jobs:
+  promote:
+    permissions: {}
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/promote.yml@0000000000000000000000000000000000000000 # v5.0.0 — replace with the tagged sha
+    with:
+      target: k8s/overlays/prod # EDIT: this service's prod overlay path
+      channel: prod # EDIT: this service's channel key
+      version: ${{ inputs.version }}
+    secrets:
+      app-id: ${{ secrets.RELEASE_APP_ID }}
+      app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}

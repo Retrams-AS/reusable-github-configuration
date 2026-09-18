@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: CalVer version to mint, YYYY-MM.N. Omit to auto-mint.
+        required: false
+        type: string
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/release_calver.yml@0000000000000000000000000000000000000000 # v5.0.0 — replace with the tagged sha
+    with:
+      image: registry.digitalocean.com/the-retrams-registry/CHANGEME # EDIT: this service's image ref
+      version: ${{ inputs.version }}
+      # promote lands the commit the tag has to sit on, so release does not tag.
+      # This suppresses the GitHub Release here too; promote cuts it instead.
+      create-tag: false
+    secrets:
+      DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
+
+  promote:
+    needs: release
+    permissions: {}
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/promote.yml@0000000000000000000000000000000000000000 # v5.0.0 — replace with the tagged sha
+    with:
+      target: k8s/overlays/prod # EDIT: this service's prod overlay path
+      channel: prod # EDIT: this service's channel key
+      version: ${{ needs.release.outputs.version }}
+      tag: ${{ needs.release.outputs.version }}
+      github-release: true
+    secrets:
+      app-id: ${{ secrets.RELEASE_APP_ID }}
+      app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
