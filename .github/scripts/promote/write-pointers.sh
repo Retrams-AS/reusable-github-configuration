@@ -12,7 +12,7 @@ if [ -n "$TARGET" ]; then
   file="${TARGET}/kustomization.yaml"
 
   if ! resp=$(gh api "repos/${REPO}/contents/${file}?ref=${GITHUB_SHA}"); then
-    echo "::error::${file} not found on ${DEFAULT_BRANCH} — is '${TARGET}' the right overlay path?"
+    echo "::error::${file} not found at ${GITHUB_SHA:0:7} — is '${TARGET}' the right overlay path?"
     exit 1
   fi
   jq -r .content <<< "$resp" | base64 -d > target-current.yaml
@@ -33,7 +33,7 @@ fi
 
 if [ -n "$CHANNEL" ]; then
   if ! resp=$(gh api "repos/${REPO}/contents/${CHANNEL_FILE}?ref=${GITHUB_SHA}"); then
-    echo "::error::${CHANNEL_FILE} not found on ${DEFAULT_BRANCH}."
+    echo "::error::${CHANNEL_FILE} not found at ${GITHUB_SHA:0:7}."
     exit 1
   fi
   jq -r .content <<< "$resp" | base64 -d > channel-current.yaml

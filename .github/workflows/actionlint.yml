@@ -56,16 +56,6 @@ jobs:
           uvx --from actionlint-py==1.7.12.24 --with shellcheck-py==0.11.0.1 actionlint
           -ignore 'property "workflow_(repository|sha)" is not defined'
 
-      # actionlint walks .github/workflows from the repo root, so it never sees
-      # .github/consumer-template — passing file arguments here lints only those.
-      - name: Actionlint the consumer template
-        run: >-
-          uvx --from actionlint-py==1.7.12.24 --with shellcheck-py==0.11.0.1 actionlint
-          -ignore 'property "workflow_(repository|sha)" is not defined'
-          .github/consumer-template/build.yml
-          .github/consumer-template/release.yml
-          .github/consumer-template/promote.yml
-
       # actions/checkout in a called workflow checks out the CALLER's repo, so
       # the shellcheck script — which lives here, not in the caller — has to be
       # fetched separately. The `job` context resolves the repo + commit SHA of
@@ -85,6 +75,18 @@ jobs:
         run: >-
           uvx --from shellcheck-py==0.11.0.1
           shellcheck ._shared/.github/scripts/*/*.sh
+
+      # actionlint walks .github/workflows from the repo root and never sees
+      # .github/consumer-template, so these are passed as file arguments — which
+      # makes it lint only them. Paths go through ._shared for the same reason
+      # the shellcheck step above does: a caller's tree has no template.
+      - name: Actionlint the consumer template
+        run: >-
+          uvx --from actionlint-py==1.7.12.24 --with shellcheck-py==0.11.0.1 actionlint
+          -ignore 'property "workflow_(repository|sha)" is not defined'
+          ._shared/.github/consumer-template/build.yml
+          ._shared/.github/consumer-template/release.yml
+          ._shared/.github/consumer-template/promote.yml
 
       # actionlint does not read action.yml at all, so the composite actions —
       # including the OpenBao token exchange — are otherwise unchecked. The

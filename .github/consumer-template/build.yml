@@ -2,8 +2,8 @@ name: Build
 
 # Consumer template — copy into .github/workflows/ and edit the marked values.
 # Builds every push and PR, and pins dev's overlay to the sha it just built.
-# See docs/superpowers/specs/2026-07-14-auto-calver-and-direct-promote-design.md
-# in reusable-github-configuration for the contract this encodes.
+# The contract is in this repo's README, under "Manifests and image from one
+# revision".
 
 on:
   pull_request:
@@ -21,6 +21,10 @@ jobs:
     with:
       image: registry.digitalocean.com/the-retrams-registry/CHANGEME # EDIT: this service's image ref
       push: ${{ github.event_name != 'pull_request' }}
+      # EDIT: paths that cannot change the image. A push touching only these
+      # retags the previous artifact instead of rebuilding. Leave .github out —
+      # this file carries the build recipe, so a change here can change the image.
+      image-irrelevant-paths: "k8s/** docs/** README.md"
     secrets:
       DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
 

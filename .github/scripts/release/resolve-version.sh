@@ -10,6 +10,17 @@ if [ -n "$VERSION" ]; then
   fi
 else
   existing=$(git tag --points-at "$GITHUB_SHA" | { grep -E "$calver" || true; } | sort -V | tail -1)
+  # A re-run reuses the original event's GITHUB_SHA, whose child is promote's
+  # pointer commit — so --points-at cannot see the tag, and without this arm a
+  # re-run mints a second version and retags the released image under it. A
+  # fresh dispatch skips this: the branch is already at the tagged commit.
+  if [ -z "$existing" ]; then
+    existing=$(git tag -l | { grep -E "$calver" || true; } | while read -r t; do
+      if [ "$(git rev-parse -q --verify "${t}^{commit}^" || true)" = "$GITHUB_SHA" ]; then
+        echo "$t"
+      fi
+    done | sort -V | tail -1)
+  fi
   if [ -n "$existing" ]; then
     VERSION="$existing"
     echo "Commit already tagged ${VERSION}; reusing it."

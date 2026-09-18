@@ -3,8 +3,8 @@ name: Promote
 # Consumer template — copy into .github/workflows/ and edit the marked values.
 # Moves prod to a version that already has a tag — a rollback, or a promotion
 # split from its release. Not for cutting a new version; that's release.yml.
-# See docs/superpowers/specs/2026-07-14-auto-calver-and-direct-promote-design.md
-# in reusable-github-configuration for the contract this encodes.
+# The contract is in this repo's README, under "Manifests and image from one
+# revision".
 
 on:
   workflow_dispatch:

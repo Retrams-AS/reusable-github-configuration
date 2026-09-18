@@ -277,17 +277,19 @@ An Argo Application that reads manifests from a branch and its image from a
 pinned `newTag` takes the two from different commits. Any commit changing a
 manifest *and* the code that manifest depends on breaks whichever environment it
 reaches first — a probe path moved on trunk 404s against an image released a
-month earlier. Three inputs across the workflows above close it. They are only
-useful together.
+month earlier. The workflows above close it, and only together.
 
 **dev — latest on both halves.** Manifests already track the default branch, so
 only the image half needs fixing: drop the push path filter so every commit has
 an artifact, and let Build pin the sha it just pushed.
 
-**prod — pinned to the CalVer tag.** Release writes the CalVer version into the
-prod overlay's channel entry in the same commit it tags, so the tag names its
-own image, and `promote` writes that version into `k8s/channels.yaml`, which an
-ApplicationSet in `digital_ocean_deployment` reads:
+**prod — pinned to the CalVer tag.** Release mints the version and retags the
+image, then hands over: `promote` writes the prod overlay's `newTag` and the
+`prod` key in `k8s/channels.yaml` into one commit, fast-forwards the default
+branch onto it, and tags that commit. So the tag is an ancestor of the branch
+and its own tree names its own image — neither is true if the two pointers are
+written separately or the tag is cut before them. An ApplicationSet in
+`digital_ocean_deployment` reads the channels file:
 
 ```yaml
 # <service>/k8s/channels.yaml — the service owns this
@@ -314,8 +316,8 @@ which release prod is on.
 Copy `build.yml`, `release.yml` and `promote.yml` from
 [`.github/consumer-template/`](.github/consumer-template/) into
 `.github/workflows/`, then edit the values each file marks: the image ref, the
-overlay paths, the channel key, and the default branch name in `build.yml`'s
-`push` trigger.
+overlay paths, the channel key, `image-irrelevant-paths`, and the default branch
+name in `build.yml`'s `push` trigger.
 
 Three things to get right:
 

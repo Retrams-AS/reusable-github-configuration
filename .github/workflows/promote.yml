@@ -55,7 +55,11 @@ permissions: {}
 jobs:
   promote:
     runs-on: ubuntu-latest
-    permissions: {}
+    # contents: read is for the ._shared checkout only — declaring any block
+    # replaces the default token outright, and checkout needs a scope. Every
+    # write this job makes goes through the App token, not this one.
+    permissions:
+      contents: read
     # Serialize promotes to the same target so two dispatches can't race the
     # read-modify-write.
     concurrency:
@@ -97,7 +101,6 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           TARGET: ${{ inputs.target }}
           CHANNEL_FILE: ${{ inputs.channel-file }}
           CHANNEL: ${{ inputs.channel }}

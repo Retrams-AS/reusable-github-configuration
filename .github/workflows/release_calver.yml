@@ -49,7 +49,10 @@ jobs:
     runs-on: ubuntu-latest # needs Docker for imagetools — not ubuntu-slim
     permissions:
       contents: write
-    # Serialize releases so two concurrent dispatches can't auto-mint the same N.
+    # Serialises the mint and the DOCR retag. It no longer spans the tag write:
+    # with create-tag: false that happens in promote's job, under its own group,
+    # so two overlapping dispatches can resolve the same N. The fast-forward is
+    # what stops both landing — one of them fails there.
     concurrency:
       group: release-calver
     outputs:
@@ -97,9 +100,3 @@ jobs:
           TARGET_SHA: ${{ github.sha }}
         run: bash ._shared/.github/scripts/release/tag-and-release.sh
 
-      - name: Note tag left to promote
-        if: steps.tag.outputs.build == 'true' && !inputs.create-tag
-        env:
-          VERSION: ${{ steps.tag.outputs.version }}
-        run: |
-          echo "create-tag is false; leaving \`${VERSION}\` for the caller's promote job to tag." >> "$GITHUB_STEP_SUMMARY"
