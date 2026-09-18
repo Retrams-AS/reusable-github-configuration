@@ -62,40 +62,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # Tag inspection relies on fetch-depth: 0 above (all tags are local).
-      - name: Resolve version (auto-mint, validate, new-vs-existing tag)
-        id: tag
-        env:
-          VERSION: ${{ inputs.version }}
-        run: |
-          calver='^[0-9]{4}-[0-9]{2}\.[0-9]+$'
-          if [ -n "$VERSION" ]; then
-            if ! echo "$VERSION" | grep -qE "$calver"; then
-              echo "::error::version must be CalVer YYYY-MM.N (e.g. 2026-06.1), got '$VERSION'."
-              exit 1
-            fi
-          else
-            existing=$(git tag --points-at "$GITHUB_SHA" | { grep -E "$calver" || true; } | sort -V | tail -1)
-            if [ -n "$existing" ]; then
-              VERSION="$existing"
-              echo "Commit already tagged ${VERSION}; reusing it."
-            else
-              ym=$(date -u +%Y-%m)
-              last=$(git tag -l "${ym}.*" | { grep -E "$calver" || true; } | sed "s/^${ym}\.//" | sort -n | tail -1)
-              VERSION="${ym}.$(( ${last:-0} + 1 ))"
-              echo "Auto-minting ${VERSION}."
-            fi
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
-            echo "build=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "build=true" >> "$GITHUB_OUTPUT"
-          fi
-          echo "Release version: \`$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Checkout shared actions at the called ref
-        if: steps.tag.outputs.build == 'true'
+      - name: Checkout shared scripts at the called ref
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: ${{ job.workflow_repository }}
@@ -103,72 +70,32 @@ jobs:
           path: ._shared
           persist-credentials: false
 
+      - name: Resolve version (auto-mint, validate, new-vs-existing tag)
+        id: tag
+        env:
+          VERSION: ${{ inputs.version }}
+        run: bash ._shared/.github/scripts/release/resolve-version.sh
+
       - name: Log in to DOCR (short-lived credentials)
         if: steps.tag.outputs.build == 'true'
         uses: ./._shared/.github/actions/docr-login
         with:
           token: ${{ secrets.DO_ACCESS_KEY }}
 
-      # Build-once/promote-many: retag the existing sha artifact to the CalVer
-      # tag (manifest copy — byte-identical, no rebuild).
-      #
-      # Walks back over kustomization-only commits. A promote bump rewrites a
-      # newTag and nothing else, so it has no artifact of its own and never will
-      # -- it carries [skip ci] because there is nothing there to build. The
-      # merge commit beneath it is the content this release is of.
       - name: Promote sha artifact to CalVer tag
         if: steps.tag.outputs.build == 'true'
         env:
           IMAGE: ${{ inputs.image }}
           VERSION: ${{ steps.tag.outputs.version }}
-        run: |
-          set -uo pipefail
-          sha="$GITHUB_SHA"
-          for _ in $(seq 1 10); do
-            sha7=$(echo "$sha" | cut -c1-7)
-            if docker buildx imagetools create --tag "${IMAGE}:${VERSION}" "${IMAGE}:${sha7}"; then
-              if [ "$sha" != "$GITHUB_SHA" ]; then
-                echo "::notice::${GITHUB_SHA:0:7} has no artifact; used ${sha7}, reached over kustomization-only commits."
-              fi
-              exit 0
-            fi
-            if ! parent=$(git rev-parse -q --verify "${sha}^"); then
-              break
-            fi
-            if [ -n "$(git diff --name-only "$parent" "$sha" -- . ':(exclude)*kustomization.yaml')" ]; then
-              break
-            fi
-            sha="$parent"
-          done
-          echo "::error::No artifact ${IMAGE}:${GITHUB_SHA:0:7} in DOCR, and no ancestor reachable over kustomization-only commits has one. The Build workflow has not pushed this commit. Dispatch Build, then re-run."
-          exit 1
+        run: bash ._shared/.github/scripts/release/promote-artifact.sh
 
-      # Tag the commit only after the image exists, always via the refs API
-      # rather than `gh release create --target` (no `git push`, so the checkout
-      # stays credential-less). Skipped when create-tag is false: the caller is
-      # chaining promote, which lands its own commit and tag instead.
       - name: Tag the version (+ GitHub Release)
         if: steps.tag.outputs.build == 'true' && inputs.create-tag
         env:
           VERSION: ${{ steps.tag.outputs.version }}
           MAKE_RELEASE: ${{ inputs.make-github-release }}
           TARGET_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          # Read before the tag exists: gh release list ignores tags, but keep the
-          # order obvious for the next reader.
-          prev=""
-          if [ "$MAKE_RELEASE" = "true" ]; then
-            prev=$(gh release list --exclude-pre-releases --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName // ""')
-          fi
-          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$VERSION" -f sha="$TARGET_SHA" >/dev/null
-          if [ "$MAKE_RELEASE" = "true" ]; then
-            if [ -n "$prev" ]; then
-              gh release create "$VERSION" --title "$VERSION" --generate-notes --notes-start-tag "$prev"
-            else
-              gh release create "$VERSION" --title "$VERSION" --generate-notes
-            fi
-          fi
+        run: bash ._shared/.github/scripts/release/tag-and-release.sh
 
       - name: Note tag left to promote
         if: steps.tag.outputs.build == 'true' && !inputs.create-tag
