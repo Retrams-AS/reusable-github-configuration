@@ -88,4 +88,4 @@ jobs:
       - name: Run ruff lint
         run: uv run ruff check . --extend-exclude ._shared
       - name: Run ruff format
-        run: uv run ruff format --check --extend-exclude ._shared
+        run: uv run ruff format --check
