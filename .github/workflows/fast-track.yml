@@ -1,0 +1,138 @@
+name: Fast-track classifier
+
+# Classifies one open PR's diff as fast or critical and, when fast, approves it
+# as a GitHub App. Dispatch it on the PR branch: the run needs exactly one open
+# PR whose head is the dispatched sha.
+#
+# Callers use `@main`, not a sha: OpenBao's role binds this file at main, so a
+# sha binding would accept an unmerged branch (spec, "Secrets").
+
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    # contents: read is for the checkouts only; writes go through the App token.
+    # id-token: write is for the OpenBao exchange.
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 10
+    concurrency:
+      group: fast-track-${{ github.repository }}-${{ github.ref }}
+    env:
+      PROMPT_REF: 708755e6d27bedabc3ae73f90196a0ef2a6cc47f # agent-plugins
+    steps:
+      # First: checking out into the workspace root clears whatever is there.
+      - name: Checkout the PR branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout shared scripts at the called ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: ._shared
+          persist-credentials: false
+
+      - name: Read secrets from OpenBao
+        id: bao
+        env:
+          BAO_ADDR: https://bao.retrams.no
+          BAO_CA: ${{ vars.BAO_SCANNER_CA }}
+          AUDIENCE: fast-track
+        run: |
+          set -euo pipefail
+
+          # An empty PEM fails the TLS handshake and reads like an outage.
+          if [ -z "${BAO_CA//[[:space:]]/}" ]; then
+            echo "::error::BAO_SCANNER_CA is empty. The OpenBao listener certificate is privately issued, so its CA must be supplied."
+            exit 1
+          fi
+          ca=$(mktemp)
+          trap 'rm -f "$ca"' EXIT
+          printf '%s\n' "$BAO_CA" > "$ca"
+
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "::error::No OIDC token available. The calling job needs 'permissions: id-token: write'."
+            exit 1
+          fi
+
+          oidc=$(curl -sS --fail-with-body \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" | jq -r .value)
+          [ -n "$oidc" ] && [ "$oidc" != "null" ] || { echo "::error::GitHub OIDC token request returned no value"; exit 1; }
+          case "$oidc" in
+            *[!A-Za-z0-9._-]*) echo "::error::GitHub OIDC token request returned a value that is not a JWT."; exit 1 ;;
+          esac
+          echo "::add-mask::$oidc"
+
+          svc=$(curl -sS --fail-with-body --cacert "$ca" \
+            -X POST "${BAO_ADDR}/v1/auth/jwt/login" \
+            -d "$(jq -nc --arg j "$oidc" '{role:"fast-track-classifier",jwt:$j}')" \
+            | jq -r .auth.client_token)
+          [ -n "$svc" ] && [ "$svc" != "null" ] || { echo "::error::auth/jwt/login returned no client token"; exit 1; }
+          case "$svc" in
+            *[!A-Za-z0-9._-]*) echo "::error::auth/jwt/login returned a malformed client token."; exit 1 ;;
+          esac
+          echo "::add-mask::$svc"
+
+          data=$(curl -sS --fail-with-body --cacert "$ca" \
+            -H "X-Vault-Token: $svc" "${BAO_ADDR}/v1/ci/data/fast-track" | jq -c .data.data)
+
+          # ::add-mask:: is line-oriented, so mask every line of a multiline
+          # value (the PEM) before it is written anywhere.
+          for k in anthropic_api_key app_id app_private_key; do
+            v=$(jq -r --arg k "$k" '.[$k] // empty' <<<"$data")
+            [ -n "$v" ] || { echo "::error::ci/fast-track has no $k"; exit 1; }
+            while IFS= read -r line; do
+              [ -n "$line" ] && echo "::add-mask::$line"
+            done <<<"$v"
+            d="EOF_$(openssl rand -hex 16)"
+            { echo "$k<<$d"; printf '%s\n' "$v"; echo "$d"; } >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # zizmor: ignore[github-app]
+        with:
+          app-id: ${{ steps.bao.outputs.app_id }}
+          private-key: ${{ steps.bao.outputs.app_private_key }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }},agent-plugins
+          permission-pull-requests: write
+          permission-statuses: write
+          permission-contents: read
+
+      - name: Fetch the classifier prompt
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          gh api -H "Accept: application/vnd.github.raw+json" \
+            "repos/${OWNER}/agent-plugins/contents/plugins/retrams-review/agents/fast-track-classifier.md?ref=${PROMPT_REF}" \
+            > "$RUNNER_TEMP/prompt.md"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          # The workspace root is the PR's tree; its uv.toml or pyproject must not pick our uv.
+          working-directory: ._shared
+
+      - name: Classify
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          ANTHROPIC_API_KEY: ${{ steps.bao.outputs.anthropic_api_key }}
+          AUDIT_KEY: ${{ steps.bao.outputs.app_private_key }}
+          PROMPT_FILE: ${{ runner.temp }}/prompt.md
+        # --no-config: the PR's uv.toml could otherwise point the pyyaml install at
+        # its own index and run code holding the App token.
+        run: uv run --no-config --python 3.13 --script ._shared/.github/scripts/fast-track/fast_track.py run
