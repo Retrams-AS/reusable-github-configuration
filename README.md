@@ -472,6 +472,19 @@ Classifies a PR's diff as `fast` or `critical`. A `fast` PR gets an approving re
 GitHub App and a `fast-track` success status; a `critical` one gets a failure status and a
 comment. Anything off the path map, or under `.github/`, is critical whatever the model says.
 
+It reaches the Claude API through workload identity federation, so no API key is stored. The
+App's id and private key come from OpenBao. Both trust only this workflow at `main` (its
+`job_workflow_ref`). Set up once per org:
+
+- A Claude Console federation rule (Workload identity > Connect workload > GitHub Actions) with
+  audience `https://api.anthropic.com` and exact claims `job_workflow_ref` =
+  `Retrams-AS/reusable-github-configuration/.github/workflows/fast-track.yml@refs/heads/main` and
+  `repository_owner` = `Retrams-AS`, targeting a service account in a workspace with a spend limit.
+- Org Actions variables `FAST_TRACK_FEDERATION_RULE_ID`, `FAST_TRACK_ANTHROPIC_ORG_ID`,
+  `FAST_TRACK_SERVICE_ACCOUNT_ID` and `FAST_TRACK_WORKSPACE_ID`.
+- OpenBao `ci/fast-track` with `app_id` and `app_private_key` (platform runbook
+  `openbao-fast-track.md`).
+
 Opt in:
 
 1. Install the classifier GitHub App on the repo.

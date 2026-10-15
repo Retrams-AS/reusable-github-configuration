@@ -137,6 +137,7 @@ class Claude(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         A.setdefault("calls", []).append((self.path, body))
+        A["auth"] = (self.headers.get("authorization"), self.headers.get("x-api-key"))
         out = ({"input_tokens": A["tokens"]} if self.path.endswith("/count_tokens") else
                {"content": [{"type": "thinking", "thinking": ""}], "stop_reason": "refusal"} if A.get("refuse") else
                {"content": [{"type": "thinking", "thinking": ""},
@@ -156,6 +157,7 @@ A.update(tokens=100_000, calls=[])
 assert ft.classify("+x\n", "sys", "high", "k", api_url) == {"verdict": "fast", "flags": []}
 (p1, b1), (p2, b2) = A["calls"]
 assert p1 == "/v1/messages/count_tokens" and p2 == "/v1/messages", A["calls"]
+assert A["auth"] == ("Bearer k", None), A["auth"]
 assert b2["output_config"] == {"effort": "high"} and "temperature" not in b2 and b2["model"] == ft.MODEL, b2
 A.update(tokens=100_001, calls=[])
 r = ft.classify("+x\n", "sys", "high", "k", api_url)
@@ -247,7 +249,7 @@ with tempfile.TemporaryDirectory() as d:
         ft.count_tokens = lambda *a: 10
         os.environ.update(GITHUB_REPOSITORY="o/r", GITHUB_REF_NAME="feat", GITHUB_SHA=sha,
                           GITHUB_API_URL=f"http://127.0.0.1:{api.server_port}", GH_TOKEN="t",
-                          APP_SLUG="app", ANTHROPIC_API_KEY="a", AUDIT_KEY=KEY,
+                          APP_SLUG="app", ANTHROPIC_ACCESS_TOKEN="a", AUDIT_KEY=KEY,
                           PROMPT_FILE=str(pf))
         cwd = os.getcwd(); os.chdir(d)
         try:

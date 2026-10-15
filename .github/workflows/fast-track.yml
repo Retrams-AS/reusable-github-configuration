@@ -92,7 +92,7 @@ jobs:
 
           # ::add-mask:: is line-oriented, so mask every line of a multiline
           # value (the PEM) before it is written anywhere.
-          for k in anthropic_api_key app_id app_private_key; do
+          for k in app_id app_private_key; do
             v=$(jq -r --arg k "$k" '.[$k] // empty' <<<"$data")
             [ -n "$v" ] || { echo "::error::ci/fast-track has no $k"; exit 1; }
             while IFS= read -r line; do
@@ -101,6 +101,44 @@ jobs:
             d="EOF_$(openssl rand -hex 16)"
             { echo "$k<<$d"; printf '%s\n' "$v"; echo "$d"; } >> "$GITHUB_OUTPUT"
           done
+
+      # Workload identity federation: the Anthropic rule binds the same job_workflow_ref as the
+      # OpenBao role, so no API key is stored anywhere. The IDs are not secrets.
+      - name: Exchange the OIDC token for an Anthropic token
+        id: claude
+        env:
+          RULE_ID: ${{ vars.FAST_TRACK_FEDERATION_RULE_ID }}
+          ORG_ID: ${{ vars.FAST_TRACK_ANTHROPIC_ORG_ID }}
+          SERVICE_ACCOUNT_ID: ${{ vars.FAST_TRACK_SERVICE_ACCOUNT_ID }}
+          WORKSPACE_ID: ${{ vars.FAST_TRACK_WORKSPACE_ID }}
+        run: |
+          set -euo pipefail
+          for v in RULE_ID ORG_ID SERVICE_ACCOUNT_ID WORKSPACE_ID; do
+            [ -n "${!v}" ] || { echo "::error::org variable for $v is not set"; exit 1; }
+          done
+
+          # A fresh JWT: Anthropic rejects one that carries an already-exchanged jti.
+          jwt=$(curl -sS --fail-with-body \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" | jq -r .value)
+          case "$jwt" in
+            ""|null|*[!A-Za-z0-9._-]*) echo "::error::GitHub OIDC token request returned no JWT"; exit 1 ;;
+          esac
+          echo "::add-mask::$jwt"
+
+          # A denied exchange is an opaque 401; the reason is on the Console's
+          # Workload identity > authentication history page.
+          token=$(jq -nc --arg a "$jwt" --arg r "$RULE_ID" --arg o "$ORG_ID" \
+              --arg s "$SERVICE_ACCOUNT_ID" --arg w "$WORKSPACE_ID" \
+              '{grant_type:"urn:ietf:params:oauth:grant-type:jwt-bearer", assertion:$a,
+                federation_rule_id:$r, organization_id:$o, service_account_id:$s, workspace_id:$w}' \
+            | curl -sS --fail-with-body -H "content-type: application/json" --data @- \
+              https://api.anthropic.com/v1/oauth/token | jq -r .access_token)
+          case "$token" in
+            ""|null|*[!A-Za-z0-9._-]*) echo "::error::Anthropic token exchange returned no access token"; exit 1 ;;
+          esac
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
 
       - name: Mint GitHub App token
         id: app-token
@@ -134,7 +172,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
-          ANTHROPIC_API_KEY: ${{ steps.bao.outputs.anthropic_api_key }}
+          ANTHROPIC_ACCESS_TOKEN: ${{ steps.claude.outputs.token }}
           AUDIT_KEY: ${{ steps.bao.outputs.app_private_key }}
           PROMPT_FILE: ${{ runner.temp }}/prompt.md
           GIT_DIR: ${{ github.workspace }}/pr/.git
