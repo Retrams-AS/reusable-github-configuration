@@ -188,8 +188,8 @@ with tempfile.TemporaryDirectory() as d:
     base = ft.sh("git", "rev-parse", "HEAD", cwd=d).strip()
     pf = Path(d + ".prompt.md"); pf.write_text("---\nname: x\n---\nsystem\n")
 
-    def case(files, model, statuses=(), pr=PR_OK, base_ref="main", head2=None):
-        g("checkout", "-q", "-B", "feat", base)
+    def case(files, model, statuses=(), pr=PR_OK, base_ref="main", head2=None, start=None):
+        g("checkout", "-q", "-B", "feat", start or base)
         for k, v in files.items():
             put(k, v)
         g("add", "."); g("commit", "-qm", "head")
@@ -256,6 +256,19 @@ with tempfile.TemporaryDirectory() as d:
     sha, code, st, rv, cm, lb = case(DOC, FAST, pr=PR_AUDIT)
     assert code == 0 and not rv and lb == [{"labels": ["fast-track-audit"]}], (rv, lb)
     assert len(cm) == 1 and "audit sample" in cm[0], cm
+    # 9: criss-cross. main and the head both merge X and Y, so base...head has two merge bases and
+    # git diffs against whichever it picks, which can hide the head's revert of Y. Only the tree
+    # that would land gives the exact answer: y.py changes, x.py does not.
+    g("checkout", "-q", "main"); put("src/arm/x.py", "unsafe\n"); put("src/arm/y.py", "unsafe\n")
+    g("add", "."); g("commit", "-qm", "r2")
+    for b in ("x", "y"):
+        g("checkout", "-q", "-B", b, "main"); put(f"src/arm/{b}.py", "safe\n"); g("add", "."); g("commit", "-qm", b)
+    g("checkout", "-q", "-B", "atk", "x"); g("merge", "-q", "--no-ff", "-m", "a", "y")
+    g("checkout", "-q", "main"); g("merge", "-q", "--no-ff", "-m", "m", "y"); g("merge", "-q", "--no-ff", "-m", "m", "x")
+    base = ft.sh("git", "rev-parse", "main", cwd=d).strip()
+    assert len(ft.sh("git", "merge-base", "--all", base, "atk", cwd=d).split()) == 2
+    sha, code, st, rv, cm, lb = case({"src/arm/y.py": "unsafe\n"}, FAST, start="atk")
+    assert st == ["failure"] and not rv and "src/arm/y.py" in cm[0] and "x.py" not in cm[0], (st, rv, cm)
 api.shutdown()
 pf.unlink()
 print("ok")

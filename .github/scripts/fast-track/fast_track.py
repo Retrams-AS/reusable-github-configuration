@@ -152,7 +152,7 @@ def sh(*args, cwd=None):
 def build_diff(base, head, cwd=None):
     # --no-textconv --text: a PR's .gitattributes (`-diff`, `diff=` drivers) must not hide code from the model.
     return sh("git", "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-color",
-              "--no-renames", f"{base}...{head}", cwd=cwd)
+              "--no-renames", base, head, cwd=cwd)
 
 
 def gh(method, path, body=None):
@@ -192,15 +192,17 @@ def run():
                      and (s.get("creator") or {}).get("login") == f"{e['APP_SLUG']}[bot]"
                      for s in statuses)
 
-        rng = f"{base}...{sha}"
-        paths = [p for p in sh("git", "diff", "--no-renames", "--name-only", "-z", rng).split("\0") if p]
+        # Judge the tree that would land, not base...sha: with two merge bases git picks one, and
+        # a revert of the other side's change vanishes from that diff. A conflict exits non-zero.
+        landed = sh("git", "merge-tree", "--write-tree", base, sha).split("\n")[0]
+        paths = [p for p in sh("git", "diff", "--no-renames", "--name-only", "-z", base, landed).split("\0") if p]
         try:
             risk_map = yaml.safe_load(sh("git", "show", f"{base}:.github/risk-paths.yaml")) or {}
         except subprocess.CalledProcessError:
             risk_map = {}  # absent at base: every path is critical
         check_map(risk_map)
         off = floor(paths, risk_map)
-        diff = build_diff(base, sha)
+        diff = build_diff(base, landed)
 
         if sticky:
             model = critical_input("an earlier run already failed this sha; push a new commit")
