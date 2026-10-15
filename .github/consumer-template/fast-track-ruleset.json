@@ -9,11 +9,17 @@
       ],
       "exclude": []
     },
-    "repository_name": {
-      "include": [
-        "~ALL"
-      ],
-      "exclude": []
+    "repository_property": {
+      "include": [],
+      "exclude": [
+        {
+          "name": "Content-Type",
+          "property_values": [
+            "docs"
+          ],
+          "source": "custom"
+        }
+      ]
     }
   },
   "rules": [
@@ -26,6 +32,28 @@
         "require_last_push_approval": true,
         "required_review_thread_resolution": false
       }
+    }
+  ],
+  "bypass_actors": [
+    {
+      "actor_id": null,
+      "actor_type": "OrganizationAdmin",
+      "bypass_mode": "pull_request"
+    },
+    {
+      "actor_id": 5,
+      "actor_type": "RepositoryRole",
+      "bypass_mode": "pull_request"
+    },
+    {
+      "actor_id": 4140731,
+      "actor_type": "Integration",
+      "bypass_mode": "always"
+    },
+    {
+      "actor_id": 4293528,
+      "actor_type": "Integration",
+      "bypass_mode": "always"
     }
   ]
 }
