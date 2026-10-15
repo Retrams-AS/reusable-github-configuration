@@ -490,27 +490,27 @@ App's client ID and private key come from OpenBao. Both trust only this workflow
   `gh api orgs/<owner>/rulesets --input .github/consumer-template/fast-track-ruleset.json`
 
 A repo with no `.github/risk-paths.yaml` is all critical, so nothing is fast until it has one. To
-make a repo's PRs eligible:
+make a repo's PRs eligible, merge a `.github/risk-paths.yaml` before the first PR to classify. It is
+read from the PR's base commit, which must be on the default branch:
 
-1. Copy `consumer-template/fast-track.yml` to `.github/workflows/`.
-2. Write `.github/risk-paths.yaml` and merge it before the first PR to classify. It is read from
-   the PR's base commit, which must be on the default branch:
-
-   ```yaml
-   fast:                  # globs a PR may touch and stay fast
-     - "src/components/**"
-   critical:              # optional; carves paths back out of `fast`
-     - "src/components/arm/**"
-   audit-rate: 5          # optional; 1 in N PRs is sampled, default 5
-   ```
+```yaml
+fast:                  # globs a PR may touch and stay fast
+  - "src/components/**"
+critical:              # optional; carves paths back out of `fast`
+  - "src/components/arm/**"
+audit-rate: 5          # optional; 1 in N PRs is sampled, default 5
+```
 
 The `fast-track-audit` label is created the first time a PR is sampled.
 
-Dispatch it on the PR branch, which needs exactly one open PR:
-`gh workflow run fast-track.yml --ref <branch>`.
+Nothing else goes in the repo. Run it here, on `main`, naming the PR:
 
-Unlike every other workflow here, callers use `@main`, not a sha. OpenBao binds the role to this
-file at `main`, and a sha would accept a commit on any unmerged branch.
+```bash
+gh workflow run fast-track.yml -R Retrams-AS/reusable-github-configuration -f repo=<name> -f pr=<number>
+```
+
+It refuses to run on any other ref: OpenBao and the federation rule bind this file at `main`, so a
+run from an unmerged branch could get neither the App key nor a Claude token.
 
 ### Zizmor (`zizmor.yml`)
 

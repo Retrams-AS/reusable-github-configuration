@@ -84,7 +84,6 @@ jobs:
           ._shared/.github/consumer-template/build.yml
           ._shared/.github/consumer-template/release.yml
           ._shared/.github/consumer-template/promote.yml
-          ._shared/.github/consumer-template/fast-track.yml
 
       # actionlint does not read action.yml at all, so the composite actions —
       # including the OpenBao token exchange — are otherwise unchecked. The

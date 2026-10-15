@@ -1,47 +1,53 @@
 name: Fast-track classifier
 
 # Classifies one open PR's diff as fast or critical and, when fast, approves it
-# as a GitHub App. Dispatch it on the PR branch: the run needs exactly one open
-# PR whose head is the dispatched sha.
+# as a GitHub App. One org-wide entry point: dispatch it here, on main, naming
+# the repo and PR to judge:
+#   gh workflow run fast-track.yml -R Retrams-AS/reusable-github-configuration -f repo=<name> -f pr=<n>
 #
-# Callers use `@main`, not a sha: OpenBao's role binds this file at main, so a
-# sha binding would accept an unmerged branch (spec, "Secrets").
+# OpenBao's role and the Anthropic federation rule both bind this file at main,
+# so a run dispatched on any other ref gets neither (spec, "Secrets").
 
 on:
-  workflow_call:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: Repository name in this org, without the owner
+        required: true
+        type: string
+      pr:
+        description: Pull request number
+        required: true
+        type: number
 
 permissions: {}
 
 jobs:
   classify:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    # contents: read is for the checkouts only; writes go through the App token.
-    # id-token: write is for the OpenBao exchange.
+    # contents: read is for the self checkout only; everything on the target repo
+    # goes through the App token. id-token: write is for OpenBao and Anthropic.
     permissions:
       contents: read
       id-token: write
     timeout-minutes: 10
     concurrency:
-      group: fast-track-${{ github.repository }}-${{ github.ref }}
+      group: fast-track-${{ inputs.repo }}-${{ inputs.pr }}
     env:
       PROMPT_REF: a8a63eb2c62a8da97455b488b485360fc2a7e159 # agent-plugins
     steps:
-      # Into pr/, never the workspace root: uv searches the working directory and
-      # its parents for .venv/bin/python and runs it, so the PR's tree must not
-      # sit above the directory uv runs from.
-      - name: Checkout the PR branch
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ github.sha }}
-          path: pr
-          fetch-depth: 0
-          persist-credentials: false
+      # The inputs are untrusted. The repo name reaches the App token's scope and
+      # a checkout, so refuse anything that is not a bare name before either.
+      - name: Check the inputs
+        env:
+          REPO: ${{ inputs.repo }}
+        run: |
+          [[ "$REPO" =~ ^[A-Za-z0-9._-]+$ && "$REPO" != .* ]] || { echo "::error::repo must be a bare repository name"; exit 1; }
 
-      - name: Checkout shared scripts at the called ref
+      - name: Checkout this repo's scripts
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
           path: ._shared
           persist-credentials: false
 
@@ -147,10 +153,23 @@ jobs:
           client-id: ${{ steps.bao.outputs.client_id }}
           private-key: ${{ steps.bao.outputs.app_private_key }}
           owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }},agent-plugins
+          repositories: ${{ inputs.repo }},agent-plugins
           permission-pull-requests: write
           permission-statuses: write
           permission-contents: read
+
+      # Into pr/, never the workspace root: uv searches the working directory and
+      # its parents for .venv/bin/python and runs it, so the PR's tree must not
+      # sit above the directory uv runs from.
+      - name: Checkout the PR
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ github.repository_owner }}/${{ inputs.repo }}
+          ref: refs/pull/${{ inputs.pr }}/head
+          token: ${{ steps.app-token.outputs.token }}
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Fetch the classifier prompt
         env:
@@ -165,11 +184,12 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           working-directory: ._shared
-          # The cache is scoped to the PR branch, whose wrapper the author controls.
           enable-cache: false
 
       - name: Classify
         env:
+          FT_REPO: ${{ github.repository_owner }}/${{ inputs.repo }}
+          FT_PR: ${{ inputs.pr }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           ANTHROPIC_ACCESS_TOKEN: ${{ steps.claude.outputs.token }}

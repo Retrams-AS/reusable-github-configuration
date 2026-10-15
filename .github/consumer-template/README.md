@@ -9,7 +9,6 @@ pinning.
 | `build.yml` | Builds every push and PR, and pins dev's overlay to the sha it just built. dev tracks the default branch on both halves. |
 | `release.yml` | Mints a CalVer version, then promotes prod to it in the same run. Cutting a version deploys it. |
 | `promote.yml` | Moves prod to a version that already has a tag — a rollback, or a promotion split from its release. |
-| `fast-track.yml` | Dispatched on a PR branch; approves the PR when the classifier finds it fast. Calls `@main`, not a sha. |
 | `fast-track-ruleset.json` | Org ruleset for every repo's default branch: stale approvals dismissed, last push approved by someone else. Applied once per org, not per repo. Not a workflow. |
 
 `release.yml` passes `create-tag: false` because promote lands the commit the tag

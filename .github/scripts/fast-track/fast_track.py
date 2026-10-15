@@ -200,19 +200,23 @@ def gh(method, path, body=None):
 
 def run():
     e = os.environ
-    repo, sha = e["GITHUB_REPOSITORY"], e["GITHUB_SHA"]
-    st = {"repo": repo, "sha": sha, "pr": None}
+    repo = e["FT_REPO"]
+    st = {"repo": repo, "sha": None, "pr": None}
     try:
-        q = urllib.parse.quote(f"{repo.split('/')[0]}:{e['GITHUB_REF_NAME']}")
-        prs = gh("GET", f"/repos/{repo}/pulls?head={q}&state=open")
-        if len(prs) != 1 or prs[0]["head"]["sha"] != sha:
-            raise RuntimeError(f"need exactly one open PR with head {sha}, found {len(prs)}")
-        b = prs[0]["base"]
+        # The inputs are untrusted: anyone who can dispatch picks them. They only choose what to judge.
+        if not re.fullmatch(re.escape(e["GITHUB_REPOSITORY_OWNER"]) + r"/[A-Za-z0-9._-]+", repo):
+            raise RuntimeError(f"repo {repo!r} is not a repository in {e['GITHUB_REPOSITORY_OWNER']}")
+        pr = int(e["FT_PR"])
+        p = gh("GET", f"/repos/{repo}/pulls/{pr}")
+        if p["state"] != "open":
+            raise RuntimeError(f"PR {pr} is {p['state']}")
+        sha = p["head"]["sha"]
+        st.update(sha=sha, pr=pr)
+        b = p["base"]
         # A PR on an author-controlled branch would read that branch's map and carry its unreviewed commits on retarget.
         if b["ref"] != b["repo"]["default_branch"]:
             raise RuntimeError(f"PR base {b['ref']} is not the default branch")
-        pr, base = prs[0]["number"], b["sha"]
-        st["pr"] = pr
+        base = b["sha"]
 
         statuses = []
         for page in range(1, 11):
@@ -274,7 +278,7 @@ def run():
     except Exception as ex:
         print(f"fast-track failed: {ex!r}", file=sys.stderr)
         for path, body in (
-            (f"/repos/{repo}/statuses/{sha}", {"state": "failure", "context": "fast-track",
+            (st["sha"] and f"/repos/{repo}/statuses/{st['sha']}", {"state": "failure", "context": "fast-track",
                                               "description": "classifier errored; critical"}),
             (st["pr"] and f"/repos/{repo}/issues/{st['pr']}/comments", {"body": f"{MARKER}\nThe fast-track classifier errored, so this PR is critical."}),
         ):
