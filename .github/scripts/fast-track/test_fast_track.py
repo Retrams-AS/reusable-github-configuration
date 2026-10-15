@@ -1,3 +1,4 @@
+import json
 import http.server
 import sys
 import threading
@@ -16,6 +17,13 @@ def raises(fn, *a):
 
 
 assert ft.strip_frontmatter("---\na: 1\n---\nbody\n") == "body\n"
+assert ft.prompt_effort("---\nmodel: haiku\neffort: high\n---\neffort: low\n") == "high"
+for bad in ("---\nmodel: haiku\n---\neffort: high\n", "---\neffort: extreme\n---\nx\n", "effort: high\n"):
+    try:
+        ft.prompt_effort(bad)
+        raise AssertionError(bad)
+    except ValueError:
+        pass
 
 m = {"fast": ["src/**", "docs/*.md"], "critical": ["src/arm/**"]}
 assert ft.on_fast_lane("src/a/b.py", m)
@@ -115,12 +123,47 @@ class Drop(http.server.BaseHTTPRequestHandler):
 
 srv = http.server.HTTPServer(("127.0.0.1", 0), Drop)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
-url = f"http://127.0.0.1:{srv.server_port}/v1/messages"
-r = ft.classify("diff --git a b\n+x\n", "sys", "k", url)
+r = ft.classify("diff --git a b\n+x\n", "sys", "high", "k", f"http://127.0.0.1:{srv.server_port}")
 assert r["verdict"] == "critical" and r["flags"][0]["file"] == "(input)", r
 srv.shutdown()
-assert ft.classify("", "s", "k") == {"verdict": "fast", "flags": []}
-assert ft.classify("x" * 300_001, "s", "k")["verdict"] == "critical"
+assert ft.classify("", "s", "high", "k") == {"verdict": "fast", "flags": []}
+assert ft.classify("x" * 1_000_001, "s", "high", "k")["verdict"] == "critical"
+
+# A well-behaved fake API: counts tokens, answers with a thinking block before the text.
+A = {}
+
+
+class Claude(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        A.setdefault("calls", []).append((self.path, body))
+        out = ({"input_tokens": A["tokens"]} if self.path.endswith("/count_tokens") else
+               {"content": [{"type": "thinking", "thinking": ""}], "stop_reason": "refusal"} if A.get("refuse") else
+               {"content": [{"type": "thinking", "thinking": ""},
+                            {"type": "text", "text": '{"verdict": "fast", "flags": []}'}]})
+        b = json.dumps(out).encode()
+        self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers()
+        self.wfile.write(b)
+
+    def log_message(self, *a):
+        pass
+
+
+srv = http.server.HTTPServer(("127.0.0.1", 0), Claude)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+api_url = f"http://127.0.0.1:{srv.server_port}"
+A.update(tokens=100_000, calls=[])
+assert ft.classify("+x\n", "sys", "high", "k", api_url) == {"verdict": "fast", "flags": []}
+(p1, b1), (p2, b2) = A["calls"]
+assert p1 == "/v1/messages/count_tokens" and p2 == "/v1/messages", A["calls"]
+assert b2["output_config"] == {"effort": "high"} and "temperature" not in b2 and b2["model"] == ft.MODEL, b2
+A.update(tokens=100_001, calls=[])
+r = ft.classify("+x\n", "sys", "high", "k", api_url)
+assert r["verdict"] == "critical" and "100001" in r["flags"][0]["why"] and len(A["calls"]) == 1, (r, A)
+A.update(tokens=10, calls=[], refuse=True)
+r = ft.classify("+x\n", "sys", "high", "k", api_url)
+assert r["verdict"] == "critical" and "refusal" in r["flags"][0]["why"], r
+srv.shutdown()
 import subprocess
 import tempfile
 
@@ -138,7 +181,6 @@ with tempfile.TemporaryDirectory() as d:
     assert "+os.system(evil)" in out, out
 
 # --- run() end to end: real git, fake GitHub API, canned model ---
-import json
 import os
 
 KEY = "k"
@@ -186,7 +228,7 @@ with tempfile.TemporaryDirectory() as d:
     put("docs/x.md", "one\ntwo\n")
     g("add", "."); g("commit", "-qm", "base")
     base = ft.sh("git", "rev-parse", "HEAD", cwd=d).strip()
-    pf = Path(d + ".prompt.md"); pf.write_text("---\nname: x\n---\nsystem\n")
+    pf = Path(d + ".prompt.md"); pf.write_text("---\nname: x\neffort: high\n---\nsystem\n")
 
     def case(files, model, statuses=(), pr=PR_OK, base_ref="main", head2=None, start=None):
         g("checkout", "-q", "-B", "feat", start or base)
@@ -202,6 +244,7 @@ with tempfile.TemporaryDirectory() as d:
             S["called"] = True
             return json.dumps(model)
         ft.call_haiku = haiku
+        ft.count_tokens = lambda *a: 10
         os.environ.update(GITHUB_REPOSITORY="o/r", GITHUB_REF_NAME="feat", GITHUB_SHA=sha,
                           GITHUB_API_URL=f"http://127.0.0.1:{api.server_port}", GH_TOKEN="t",
                           APP_SLUG="app", ANTHROPIC_API_KEY="a", AUDIT_KEY=KEY,
@@ -231,6 +274,7 @@ with tempfile.TemporaryDirectory() as d:
     # 2
     sha, code, st, rv, cm, lb = case({**DOC, "src/y.py": "x\n"}, FAST)
     assert code == 0 and st == ["failure"] and not rv and len(cm) == 1 and "src/y.py" in cm[0], (st, cm)
+    assert not S["called"], "the floor is already critical; the model must not be asked"
     # 3
     sha, code, st, rv, cm, lb = case({".github/risk-paths.yaml": 'fast: ["**"]\n', "src/y.py": "x\n"}, FAST)
     assert st == ["failure"] and not rv and "src/y.py" in cm[0] and ".github/risk-paths.yaml" in cm[0], (st, cm)

@@ -17,13 +17,27 @@ from pathlib import PurePosixPath
 import yaml
 
 TRIGGERS = {"hardware", "data", "contract", "auth", "reviewer"}
-MAX_DIFF = 300_000
+API = "https://api.anthropic.com"
+MODEL = "claude-haiku-5-5"
+# Haiku 5.5's price doubles above 100K input tokens, and a human should read a change that size.
+MAX_TOKENS_IN = 100_000
+MAX_DIFF = 1_000_000  # characters; far past MAX_TOKENS_IN, so not worth a count call
+EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 MAX_COMMENT = 60_000
 MARKER = "<!-- fast-track -->"
 
 
 def strip_frontmatter(text):
     return text.split("\n---\n", 1)[1] if text.startswith("---\n") else text
+
+
+def prompt_effort(text):
+    """The `effort:` line of the agent file's frontmatter, the way agent-plugins' check.sh reads it."""
+    head = text.split("\n---\n", 1)[0] if text.startswith("---\n") else ""
+    m = re.search(r"^effort: *(\S+) *$", head, re.M)
+    if not m or m[1] not in EFFORTS:
+        raise ValueError(f"prompt frontmatter has no valid effort: {m and m[1]!r}")
+    return m[1]
 
 
 def check_map(m):
@@ -118,15 +132,30 @@ def fence(text):
     return f"{t}diff\n{text}\n{t}"
 
 
-def call_haiku(diff, system, api_key, url="https://api.anthropic.com/v1/messages", timeout=90):
-    body = json.dumps({"model": "claude-haiku-5-5", "max_tokens": 2048, "temperature": 0,
-                       "system": system,
-                       "messages": [{"role": "user", "content": diff}]}).encode()
-    req = urllib.request.Request(url, body, {
+def anthropic(path, body, api_key, api=API, timeout=90):
+    req = urllib.request.Request(api + path, json.dumps(body).encode(), {
         "x-api-key": api_key, "anthropic-version": "2023-06-01",
         "content-type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.load(r)["content"][0]["text"]
+        return json.load(r)
+
+
+def count_tokens(diff, system, api_key, api=API):
+    return anthropic("/v1/messages/count_tokens", {
+        "model": MODEL, "system": system,
+        "messages": [{"role": "user", "content": diff}]}, api_key, api)["input_tokens"]
+
+
+def call_haiku(diff, system, effort, api_key, api=API):
+    # No temperature: Haiku 5.5 rejects non-default sampling. It thinks by default, so the answer
+    # is the first text block, not content[0]; a refusal has none and raises.
+    r = anthropic("/v1/messages", {
+        "model": MODEL, "max_tokens": 16000, "output_config": {"effort": effort},
+        "system": system, "messages": [{"role": "user", "content": diff}]}, api_key, api, timeout=300)
+    text = next((b["text"] for b in r["content"] if b["type"] == "text"), None)
+    if text is None:
+        raise ValueError(f"no text in the reply, stop_reason {r.get('stop_reason')}")
+    return text
 
 
 def critical_input(why):
@@ -134,13 +163,16 @@ def critical_input(why):
             "flags": [{"file": "(input)", "line": 0, "trigger": "contract", "why": why}]}
 
 
-def classify(diff, system, api_key, url="https://api.anthropic.com/v1/messages"):
+def classify(diff, system, effort, api_key, api=API):
     if not diff.strip():
         return {"verdict": "fast", "flags": []}
     if len(diff) > MAX_DIFF:
         return critical_input(f"diff is {len(diff)} characters, over the {MAX_DIFF} limit")
     try:
-        return parse_verdict(call_haiku(diff, system, api_key, url))
+        n = count_tokens(diff, system, api_key, api)
+        if n > MAX_TOKENS_IN:
+            return critical_input(f"diff is {n} input tokens, over the {MAX_TOKENS_IN} limit")
+        return parse_verdict(call_haiku(diff, system, effort, api_key, api))
     except Exception as e:
         return critical_input(f"classifier error: {type(e).__name__}: {e}")
 
@@ -206,10 +238,13 @@ def run():
 
         if sticky:
             model = critical_input("an earlier run already failed this sha; push a new commit")
+        elif off:
+            # The model can only escalate, so asking it would change nothing.
+            model = {"verdict": "not asked", "flags": []}
         else:
             with open(e["PROMPT_FILE"]) as f:
-                system = strip_frontmatter(f.read())
-            model = classify(diff, system, e["ANTHROPIC_API_KEY"])
+                agent = f.read()
+            model = classify(diff, strip_frontmatter(agent), prompt_effort(agent), e["ANTHROPIC_API_KEY"])
         verdict = decide(off, model)
         audit = sampled(e["AUDIT_KEY"].encode(), repo, pr, risk_map.get("audit-rate", 5))
 

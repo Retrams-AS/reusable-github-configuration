@@ -24,7 +24,7 @@ jobs:
     concurrency:
       group: fast-track-${{ github.repository }}-${{ github.ref }}
     env:
-      PROMPT_REF: 708755e6d27bedabc3ae73f90196a0ef2a6cc47f # agent-plugins
+      PROMPT_REF: 8d5a0767bcb47cd11b52f3c5112fce2472aaa53a # agent-plugins
     steps:
       # Into pr/, never the workspace root: uv searches the working directory and
       # its parents for .venv/bin/python and runs it, so the PR's tree must not
