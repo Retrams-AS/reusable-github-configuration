@@ -10,7 +10,7 @@ pinning.
 | `release.yml` | Mints a CalVer version, then promotes prod to it in the same run. Cutting a version deploys it. |
 | `promote.yml` | Moves prod to a version that already has a tag — a rollback, or a promotion split from its release. |
 | `fast-track.yml` | Dispatched on a PR branch; approves the PR when the classifier finds it fast. Calls `@main`, not a sha. |
-| `fast-track-ruleset.json` | Ruleset for the default branch: one approval, stale approvals dismissed, last push approved by someone else. Not a workflow. |
+| `fast-track-ruleset.json` | Org ruleset for default branches of repos whose `fast-track` property is `true`: stale approvals dismissed, last push approved by someone else. Applied once per org, not per repo. Not a workflow. |
 
 `release.yml` passes `create-tag: false` because promote lands the commit the tag
 has to sit on. Release tagging first would put the tag on the commit before the

@@ -473,7 +473,7 @@ GitHub App and a `fast-track` success status; a `critical` one gets a failure st
 comment. Anything off the path map, or under `.github/`, is critical whatever the model says.
 
 It reaches the Claude API through workload identity federation, so no API key is stored. The
-App's id and private key come from OpenBao. Both trust only this workflow at `main` (its
+App's client ID and private key come from OpenBao. Both trust only this workflow at `main` (its
 `job_workflow_ref`). Set up once per org:
 
 - A Claude Console federation rule (Workload identity > Connect workload > GitHub Actions) with
@@ -484,6 +484,15 @@ App's id and private key come from OpenBao. Both trust only this workflow at `ma
   `FAST_TRACK_SERVICE_ACCOUNT_ID` and `FAST_TRACK_WORKSPACE_ID`.
 - OpenBao `ci/fast-track` with `client_id` and `app_private_key` (platform runbook
   `openbao-fast-track.md`).
+- A `fast-track` true/false org custom property, and the org ruleset that applies to repos where
+  it is `true`. The org's own rulesets already require one approval; this one adds that the
+  approval must come after the last push:
+
+  ```bash
+  gh api -X PUT orgs/<owner>/properties/schema/fast-track \
+    -f value_type=true_false -f default_value=false -f description="Opted in to fast-track review"
+  gh api orgs/<owner>/rulesets --input .github/consumer-template/fast-track-ruleset.json
+  ```
 
 Opt in:
 
@@ -500,8 +509,14 @@ Opt in:
    audit-rate: 5          # optional; 1 in N PRs is sampled, default 5
    ```
 
-4. Apply the ruleset, from a clone of this repo:
-   `gh api repos/<owner>/<repo>/rulesets --input .github/consumer-template/fast-track-ruleset.json`
+4. Set the property, which puts the repo under the org ruleset:
+
+   ```bash
+   echo '{"properties":[{"property_name":"fast-track","value":"true"}]}' \
+     | gh api -X PATCH repos/<owner>/<repo>/properties/values --input -
+   ```
+
+The `fast-track-audit` label is created the first time a PR is sampled.
 
 Dispatch it on the PR branch, which needs exactly one open PR:
 `gh workflow run fast-track.yml --ref <branch>`.
