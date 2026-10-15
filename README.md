@@ -482,7 +482,7 @@ App's id and private key come from OpenBao. Both trust only this workflow at `ma
   `repository_owner` = `Retrams-AS`, targeting a service account in a workspace with a spend limit.
 - Org Actions variables `FAST_TRACK_FEDERATION_RULE_ID`, `FAST_TRACK_ANTHROPIC_ORG_ID`,
   `FAST_TRACK_SERVICE_ACCOUNT_ID` and `FAST_TRACK_WORKSPACE_ID`.
-- OpenBao `ci/fast-track` with `app_id` and `app_private_key` (platform runbook
+- OpenBao `ci/fast-track` with `client_id` and `app_private_key` (platform runbook
   `openbao-fast-track.md`).
 
 Opt in:

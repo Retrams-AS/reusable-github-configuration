@@ -92,7 +92,7 @@ jobs:
 
           # ::add-mask:: is line-oriented, so mask every line of a multiline
           # value (the PEM) before it is written anywhere.
-          for k in app_id app_private_key; do
+          for k in client_id app_private_key; do
             v=$(jq -r --arg k "$k" '.[$k] // empty' <<<"$data")
             [ -n "$v" ] || { echo "::error::ci/fast-track has no $k"; exit 1; }
             while IFS= read -r line; do
@@ -144,7 +144,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         with:
-          app-id: ${{ steps.bao.outputs.app_id }}
+          client-id: ${{ steps.bao.outputs.client_id }}
           private-key: ${{ steps.bao.outputs.app_private_key }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }},agent-plugins
