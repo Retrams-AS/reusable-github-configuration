@@ -26,11 +26,14 @@ jobs:
     env:
       PROMPT_REF: 708755e6d27bedabc3ae73f90196a0ef2a6cc47f # agent-plugins
     steps:
-      # First: checking out into the workspace root clears whatever is there.
+      # Into pr/, never the workspace root: uv searches the working directory and
+      # its parents for .venv/bin/python and runs it, so the PR's tree must not
+      # sit above the directory uv runs from.
       - name: Checkout the PR branch
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.sha }}
+          path: pr
           fetch-depth: 0
           persist-credentials: false
 
@@ -101,7 +104,7 @@ jobs:
 
       - name: Mint GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # zizmor: ignore[github-app]
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         with:
           app-id: ${{ steps.bao.outputs.app_id }}
           private-key: ${{ steps.bao.outputs.app_private_key }}
@@ -123,8 +126,9 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
-          # The workspace root is the PR's tree; its uv.toml or pyproject must not pick our uv.
           working-directory: ._shared
+          # The cache is scoped to the PR branch, whose wrapper the author controls.
+          enable-cache: false
 
       - name: Classify
         env:
@@ -133,6 +137,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ steps.bao.outputs.anthropic_api_key }}
           AUDIT_KEY: ${{ steps.bao.outputs.app_private_key }}
           PROMPT_FILE: ${{ runner.temp }}/prompt.md
-        # --no-config: the PR's uv.toml could otherwise point the pyyaml install at
-        # its own index and run code holding the App token.
-        run: uv run --no-config --python 3.13 --script ._shared/.github/scripts/fast-track/fast_track.py run
+          GIT_DIR: ${{ github.workspace }}/pr/.git
+          GIT_WORK_TREE: ${{ github.workspace }}/pr
+        working-directory: ._shared
+        run: uv run --no-config --python 3.13 --script .github/scripts/fast-track/fast_track.py run

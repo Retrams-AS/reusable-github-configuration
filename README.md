@@ -474,8 +474,10 @@ comment. Anything off the path map, or under `.github/`, is critical whatever th
 
 Opt in:
 
-1. Copy `consumer-template/fast-track.yml` to `.github/workflows/`.
-2. Write `.github/risk-paths.yaml`. It is read from the PR's base commit:
+1. Install the classifier GitHub App on the repo.
+2. Copy `consumer-template/fast-track.yml` to `.github/workflows/`.
+3. Write `.github/risk-paths.yaml` and merge it before the first PR to classify. It is read from
+   the PR's base commit, which must be on the default branch:
 
    ```yaml
    fast:                  # globs a PR may touch and stay fast
@@ -485,7 +487,7 @@ Opt in:
    audit-rate: 5          # optional; 1 in N PRs is sampled, default 5
    ```
 
-3. Apply the ruleset:
+4. Apply the ruleset, from a clone of this repo:
    `gh api repos/<owner>/<repo>/rulesets --input .github/consumer-template/fast-track-ruleset.json`
 
 Dispatch it on the PR branch, which needs exactly one open PR:
