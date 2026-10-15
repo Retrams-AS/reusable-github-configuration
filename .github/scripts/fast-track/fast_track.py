@@ -132,26 +132,26 @@ def fence(text):
     return f"{t}diff\n{text}\n{t}"
 
 
-def anthropic(path, body, api_key, api=API, timeout=90):
+def anthropic(path, body, token, api=API, timeout=90):
     req = urllib.request.Request(api + path, json.dumps(body).encode(), {
-        "x-api-key": api_key, "anthropic-version": "2023-06-01",
+        "authorization": f"Bearer {token}", "anthropic-version": "2023-06-01",
         "content-type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
 
 
-def count_tokens(diff, system, api_key, api=API):
+def count_tokens(diff, system, token, api=API):
     return anthropic("/v1/messages/count_tokens", {
         "model": MODEL, "system": system,
-        "messages": [{"role": "user", "content": diff}]}, api_key, api)["input_tokens"]
+        "messages": [{"role": "user", "content": diff}]}, token, api)["input_tokens"]
 
 
-def call_haiku(diff, system, effort, api_key, api=API):
+def call_haiku(diff, system, effort, token, api=API):
     # No temperature: Haiku 5.5 rejects non-default sampling. It thinks by default, so the answer
     # is the first text block, not content[0]; a refusal has none and raises.
     r = anthropic("/v1/messages", {
         "model": MODEL, "max_tokens": 16000, "output_config": {"effort": effort},
-        "system": system, "messages": [{"role": "user", "content": diff}]}, api_key, api, timeout=300)
+        "system": system, "messages": [{"role": "user", "content": diff}]}, token, api, timeout=300)
     text = next((b["text"] for b in r["content"] if b["type"] == "text"), None)
     if text is None:
         raise ValueError(f"no text in the reply, stop_reason {r.get('stop_reason')}")
@@ -163,16 +163,16 @@ def critical_input(why):
             "flags": [{"file": "(input)", "line": 0, "trigger": "contract", "why": why}]}
 
 
-def classify(diff, system, effort, api_key, api=API):
+def classify(diff, system, effort, token, api=API):
     if not diff.strip():
         return {"verdict": "fast", "flags": []}
     if len(diff) > MAX_DIFF:
         return critical_input(f"diff is {len(diff)} characters, over the {MAX_DIFF} limit")
     try:
-        n = count_tokens(diff, system, api_key, api)
+        n = count_tokens(diff, system, token, api)
         if n > MAX_TOKENS_IN:
             return critical_input(f"diff is {n} input tokens, over the {MAX_TOKENS_IN} limit")
-        return parse_verdict(call_haiku(diff, system, effort, api_key, api))
+        return parse_verdict(call_haiku(diff, system, effort, token, api))
     except Exception as e:
         return critical_input(f"classifier error: {type(e).__name__}: {e}")
 
@@ -200,19 +200,23 @@ def gh(method, path, body=None):
 
 def run():
     e = os.environ
-    repo, sha = e["GITHUB_REPOSITORY"], e["GITHUB_SHA"]
-    st = {"repo": repo, "sha": sha, "pr": None}
+    repo = e["FT_REPO"]
+    st = {"repo": repo, "sha": None, "pr": None}
     try:
-        q = urllib.parse.quote(f"{repo.split('/')[0]}:{e['GITHUB_REF_NAME']}")
-        prs = gh("GET", f"/repos/{repo}/pulls?head={q}&state=open")
-        if len(prs) != 1 or prs[0]["head"]["sha"] != sha:
-            raise RuntimeError(f"need exactly one open PR with head {sha}, found {len(prs)}")
-        b = prs[0]["base"]
+        # The inputs are untrusted: anyone who can dispatch picks them. They only choose what to judge.
+        if not re.fullmatch(re.escape(e["GITHUB_REPOSITORY_OWNER"]) + r"/[A-Za-z0-9._-]+", repo):
+            raise RuntimeError(f"repo {repo!r} is not a repository in {e['GITHUB_REPOSITORY_OWNER']}")
+        pr = int(e["FT_PR"])
+        p = gh("GET", f"/repos/{repo}/pulls/{pr}")
+        if p["state"] != "open":
+            raise RuntimeError(f"PR {pr} is {p['state']}")
+        sha = p["head"]["sha"]
+        st.update(sha=sha, pr=pr)
+        b = p["base"]
         # A PR on an author-controlled branch would read that branch's map and carry its unreviewed commits on retarget.
         if b["ref"] != b["repo"]["default_branch"]:
             raise RuntimeError(f"PR base {b['ref']} is not the default branch")
-        pr, base = prs[0]["number"], b["sha"]
-        st["pr"] = pr
+        base = b["sha"]
 
         statuses = []
         for page in range(1, 11):
@@ -244,7 +248,7 @@ def run():
         else:
             with open(e["PROMPT_FILE"]) as f:
                 agent = f.read()
-            model = classify(diff, strip_frontmatter(agent), prompt_effort(agent), e["ANTHROPIC_API_KEY"])
+            model = classify(diff, strip_frontmatter(agent), prompt_effort(agent), e["ANTHROPIC_ACCESS_TOKEN"])
         verdict = decide(off, model)
         audit = sampled(e["AUDIT_KEY"].encode(), repo, pr, risk_map.get("audit-rate", 5))
 
@@ -274,7 +278,7 @@ def run():
     except Exception as ex:
         print(f"fast-track failed: {ex!r}", file=sys.stderr)
         for path, body in (
-            (f"/repos/{repo}/statuses/{sha}", {"state": "failure", "context": "fast-track",
+            (st["sha"] and f"/repos/{repo}/statuses/{st['sha']}", {"state": "failure", "context": "fast-track",
                                               "description": "classifier errored; critical"}),
             (st["pr"] and f"/repos/{repo}/issues/{st['pr']}/comments", {"body": f"{MARKER}\nThe fast-track classifier errored, so this PR is critical."}),
         ):

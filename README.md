@@ -472,29 +472,45 @@ Classifies a PR's diff as `fast` or `critical`. A `fast` PR gets an approving re
 GitHub App and a `fast-track` success status; a `critical` one gets a failure status and a
 comment. Anything off the path map, or under `.github/`, is critical whatever the model says.
 
-Opt in:
+It reaches the Claude API through workload identity federation, so no API key is stored. The
+App's client ID and private key come from OpenBao. Both trust only this workflow at `main` (its
+`job_workflow_ref`). Set up once per org:
 
-1. Install the classifier GitHub App on the repo.
-2. Copy `consumer-template/fast-track.yml` to `.github/workflows/`.
-3. Write `.github/risk-paths.yaml` and merge it before the first PR to classify. It is read from
-   the PR's base commit, which must be on the default branch:
+- A Claude Console federation rule (Workload identity > Connect workload > GitHub Actions) with
+  audience `https://api.anthropic.com` and exact claims `job_workflow_ref` =
+  `Retrams-AS/reusable-github-configuration/.github/workflows/fast-track.yml@refs/heads/main` and
+  `repository_owner` = `Retrams-AS`, targeting a service account in a workspace with a spend limit.
+- Org Actions variables `FAST_TRACK_FEDERATION_RULE_ID`, `FAST_TRACK_ANTHROPIC_ORG_ID`,
+  `FAST_TRACK_SERVICE_ACCOUNT_ID` and `FAST_TRACK_WORKSPACE_ID`.
+- OpenBao `ci/fast-track` with `client_id` and `app_private_key` (platform runbook
+  `openbao-fast-track.md`).
+- The App installed on **All repositories**.
+- The `fast-track` org ruleset. The org's rulesets already require one approval; this one adds,
+  on every repo's default branch, that the approval must come after the last push:
+  `gh api orgs/<owner>/rulesets --input .github/consumer-template/fast-track-ruleset.json`
 
-   ```yaml
-   fast:                  # globs a PR may touch and stay fast
-     - "src/components/**"
-   critical:              # optional; carves paths back out of `fast`
-     - "src/components/arm/**"
-   audit-rate: 5          # optional; 1 in N PRs is sampled, default 5
-   ```
+A repo with no `.github/risk-paths.yaml` is all critical, so nothing is fast until it has one. To
+make a repo's PRs eligible, merge a `.github/risk-paths.yaml` before the first PR to classify. It is
+read from the PR's base commit, which must be on the default branch:
 
-4. Apply the ruleset, from a clone of this repo:
-   `gh api repos/<owner>/<repo>/rulesets --input .github/consumer-template/fast-track-ruleset.json`
+```yaml
+fast:                  # globs a PR may touch and stay fast
+  - "src/components/**"
+critical:              # optional; carves paths back out of `fast`
+  - "src/components/arm/**"
+audit-rate: 5          # optional; 1 in N PRs is sampled, default 5
+```
 
-Dispatch it on the PR branch, which needs exactly one open PR:
-`gh workflow run fast-track.yml --ref <branch>`.
+The `fast-track-audit` label is created the first time a PR is sampled.
 
-Unlike every other workflow here, callers use `@main`, not a sha. OpenBao binds the role to this
-file at `main`, and a sha would accept a commit on any unmerged branch.
+Nothing else goes in the repo. Run it here, on `main`, naming the PR:
+
+```bash
+gh workflow run fast-track.yml -R Retrams-AS/reusable-github-configuration -f repo=<name> -f pr=<number>
+```
+
+It refuses to run on any other ref: OpenBao and the federation rule bind this file at `main`, so a
+run from an unmerged branch could get neither the App key nor a Claude token.
 
 ### Zizmor (`zizmor.yml`)
 

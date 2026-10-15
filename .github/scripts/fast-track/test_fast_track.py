@@ -137,6 +137,7 @@ class Claude(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         A.setdefault("calls", []).append((self.path, body))
+        A["auth"] = (self.headers.get("authorization"), self.headers.get("x-api-key"))
         out = ({"input_tokens": A["tokens"]} if self.path.endswith("/count_tokens") else
                {"content": [{"type": "thinking", "thinking": ""}], "stop_reason": "refusal"} if A.get("refuse") else
                {"content": [{"type": "thinking", "thinking": ""},
@@ -156,6 +157,7 @@ A.update(tokens=100_000, calls=[])
 assert ft.classify("+x\n", "sys", "high", "k", api_url) == {"verdict": "fast", "flags": []}
 (p1, b1), (p2, b2) = A["calls"]
 assert p1 == "/v1/messages/count_tokens" and p2 == "/v1/messages", A["calls"]
+assert A["auth"] == ("Bearer k", None), A["auth"]
 assert b2["output_config"] == {"effort": "high"} and "temperature" not in b2 and b2["model"] == ft.MODEL, b2
 A.update(tokens=100_001, calls=[])
 r = ft.classify("+x\n", "sys", "high", "k", api_url)
@@ -196,10 +198,10 @@ class Fake(http.server.BaseHTTPRequestHandler):
         self.wfile.write(b)
 
     def do_GET(self):
-        if "/pulls?head=" in self.path:
-            self.reply([S["pr"]])
-        elif "/pulls/" in self.path:
-            self.reply({"head": {"sha": S["head2"]}})
+        if "/pulls/" in self.path:
+            # First read finds the PR; the read just before approving sees head2.
+            first = not S.get("seen"); S["seen"] = True
+            self.reply(S["pr"] if first else {**S["pr"], "head": {"sha": S["head2"]}})
         elif "/statuses" in self.path:
             self.reply(S["statuses"])
         else:
@@ -236,8 +238,8 @@ with tempfile.TemporaryDirectory() as d:
             put(k, v)
         g("add", "."); g("commit", "-qm", "head")
         sha = ft.sh("git", "rev-parse", "HEAD", cwd=d).strip()
-        S.update(posts=[], head2=head2 or sha, statuses=list(statuses), called=False, pr={
-            "number": pr, "head": {"sha": sha},
+        S.update(posts=[], head2=head2 or sha, statuses=list(statuses), called=False, seen=False, pr={
+            "number": pr, "state": "open", "head": {"sha": sha},
             "base": {"ref": base_ref, "sha": base, "repo": {"default_branch": "main"}}})
 
         def haiku(*a):
@@ -245,9 +247,9 @@ with tempfile.TemporaryDirectory() as d:
             return json.dumps(model)
         ft.call_haiku = haiku
         ft.count_tokens = lambda *a: 10
-        os.environ.update(GITHUB_REPOSITORY="o/r", GITHUB_REF_NAME="feat", GITHUB_SHA=sha,
+        os.environ.update(FT_REPO="o/r", FT_PR=str(pr), GITHUB_REPOSITORY_OWNER="o",
                           GITHUB_API_URL=f"http://127.0.0.1:{api.server_port}", GH_TOKEN="t",
-                          APP_SLUG="app", ANTHROPIC_API_KEY="a", AUDIT_KEY=KEY,
+                          APP_SLUG="app", ANTHROPIC_ACCESS_TOKEN="a", AUDIT_KEY=KEY,
                           PROMPT_FILE=str(pf))
         cwd = os.getcwd(); os.chdir(d)
         try:
@@ -313,6 +315,24 @@ with tempfile.TemporaryDirectory() as d:
     assert len(ft.sh("git", "merge-base", "--all", base, "atk", cwd=d).split()) == 2
     sha, code, st, rv, cm, lb = case({"src/arm/y.py": "unsafe\n"}, FAST, start="atk")
     assert st == ["failure"] and not rv and "src/arm/y.py" in cm[0] and "x.py" not in cm[0], (st, rv, cm)
+
+# Untrusted inputs: a repo outside the org, or a path in the name, is refused before any API call.
+for bad in ("evil/r", "o/r/../x", "o/", "o/r?x=1"):
+    S.update(posts=[], seen=False)
+    os.environ.update(FT_REPO=bad, FT_PR="1", GITHUB_REPOSITORY_OWNER="o")
+    try:
+        ft.run(); code = 0
+    except SystemExit as ex:
+        code = ex.code
+    assert code == 1 and S["posts"] == [], (bad, code, S["posts"])
+# A closed PR is not judged: no status, only the error comment.
+S.update(posts=[], seen=False, pr={**S["pr"], "state": "closed"})
+os.environ.update(FT_REPO="o/r", FT_PR=str(S["pr"]["number"]))
+try:
+    ft.run(); code = 0
+except SystemExit as ex:
+    code = ex.code
+assert code == 1 and not [p for p, b in S["posts"] if "/statuses/" in p], S["posts"]
 api.shutdown()
 pf.unlink()
 print("ok")
