@@ -136,4 +136,126 @@ with tempfile.TemporaryDirectory() as d:
     g("add", "."); g("commit", "-qm", "head")
     out = ft.build_diff(base, "HEAD", cwd=d)
     assert "+os.system(evil)" in out, out
+
+# --- run() end to end: real git, fake GitHub API, canned model ---
+import json
+import os
+
+KEY = "k"
+PR_OK = next(i for i in range(1, 99) if not ft.sampled(KEY.encode(), "o/r", i, 5))
+PR_AUDIT = next(i for i in range(1, 99) if ft.sampled(KEY.encode(), "o/r", i, 5))
+S = {}
+
+
+class Fake(http.server.BaseHTTPRequestHandler):
+    def reply(self, obj):
+        b = json.dumps(obj).encode()
+        self.send_response(200); self.send_header("content-length", str(len(b))); self.end_headers()
+        self.wfile.write(b)
+
+    def do_GET(self):
+        if "/pulls?head=" in self.path:
+            self.reply([S["pr"]])
+        elif "/pulls/" in self.path:
+            self.reply({"head": {"sha": S["head2"]}})
+        elif "/statuses" in self.path:
+            self.reply(S["statuses"])
+        else:
+            self.send_error(404)
+
+    def do_POST(self):
+        S["posts"].append((self.path, json.loads(self.rfile.read(int(self.headers["content-length"])))))
+        self.reply({})
+
+    def log_message(self, *a):
+        pass
+
+
+api = http.server.HTTPServer(("127.0.0.1", 0), Fake)
+threading.Thread(target=api.serve_forever, daemon=True).start()
+
+with tempfile.TemporaryDirectory() as d:
+    def g(*a):
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=d, check=True, capture_output=True)
+
+    def put(name, text):
+        Path(d, name).parent.mkdir(parents=True, exist_ok=True)
+        Path(d, name).write_text(text)
+    g("init", "-q", "-b", "main")
+    put(".github/risk-paths.yaml", 'fast: ["docs/**"]\n')
+    put("docs/x.md", "one\ntwo\n")
+    g("add", "."); g("commit", "-qm", "base")
+    base = ft.sh("git", "rev-parse", "HEAD", cwd=d).strip()
+    pf = Path(d + ".prompt.md"); pf.write_text("---\nname: x\n---\nsystem\n")
+
+    def case(files, model, statuses=(), pr=PR_OK, base_ref="main", head2=None):
+        g("checkout", "-q", "-B", "feat", base)
+        for k, v in files.items():
+            put(k, v)
+        g("add", "."); g("commit", "-qm", "head")
+        sha = ft.sh("git", "rev-parse", "HEAD", cwd=d).strip()
+        S.update(posts=[], head2=head2 or sha, statuses=list(statuses), called=False, pr={
+            "number": pr, "head": {"sha": sha},
+            "base": {"ref": base_ref, "sha": base, "repo": {"default_branch": "main"}}})
+
+        def haiku(*a):
+            S["called"] = True
+            return json.dumps(model)
+        ft.call_haiku = haiku
+        os.environ.update(GITHUB_REPOSITORY="o/r", GITHUB_REF_NAME="feat", GITHUB_SHA=sha,
+                          GITHUB_API_URL=f"http://127.0.0.1:{api.server_port}", GH_TOKEN="t",
+                          APP_SLUG="app", ANTHROPIC_API_KEY="a", AUDIT_KEY=KEY,
+                          PROMPT_FILE=str(pf))
+        cwd = os.getcwd(); os.chdir(d)
+        try:
+            ft.run(); code = 0
+        except SystemExit as e:
+            code = e.code
+        finally:
+            os.chdir(cwd)
+        P = S["posts"]
+        status = [b["state"] for p, b in P if "/statuses/" in p]
+        assert all(p.endswith(f"/statuses/{sha}") for p, b in P if "/statuses/" in p)
+        reviews = [b for p, b in P if p.endswith("/reviews")]
+        comments = [b["body"] for p, b in P if p.endswith("/comments")]
+        labels = [b for p, b in P if p.endswith("/labels")]
+        return sha, code, status, reviews, comments, labels
+
+    FAST = {"verdict": "fast", "flags": []}
+    DOC = {"docs/x.md": "one\nTWO\n"}
+
+    # 1
+    sha, code, st, rv, cm, lb = case(DOC, FAST)
+    assert code == 0 and st == ["success"] and not cm and not lb, (code, st, cm)
+    assert len(rv) == 1 and rv[0]["event"] == "APPROVE" and rv[0]["commit_id"] == sha, rv
+    # 2
+    sha, code, st, rv, cm, lb = case({**DOC, "src/y.py": "x\n"}, FAST)
+    assert code == 0 and st == ["failure"] and not rv and len(cm) == 1 and "src/y.py" in cm[0], (st, cm)
+    # 3
+    sha, code, st, rv, cm, lb = case({".github/risk-paths.yaml": 'fast: ["**"]\n', "src/y.py": "x\n"}, FAST)
+    assert st == ["failure"] and not rv and "src/y.py" in cm[0] and ".github/risk-paths.yaml" in cm[0], (st, cm)
+    # 4
+    crit = {"verdict": "critical", "flags": [{"file": "docs/x.md", "line": 1, "trigger": "auth", "why": "because"}]}
+    sha, code, st, rv, cm, lb = case(DOC, crit)
+    assert st == ["failure"] and not rv and len(cm) == 1, (st, cm)
+    assert "docs/x.md:1" in cm[0] and "because" in cm[0] and "+TWO" in cm[0] and "@@" in cm[0], cm
+    # 5
+    sticky = [{"context": "fast-track", "state": "failure", "creator": {"login": "app[bot]"}}]
+    sha, code, st, rv, cm, lb = case(DOC, FAST, statuses=sticky)
+    assert not S["called"] and st == ["failure"] and not rv and len(cm) == 1, (S["called"], st, cm)
+    # 5b: same status by someone else is not sticky
+    sha, code, st, rv, cm, lb = case(DOC, FAST, statuses=[{**sticky[0], "creator": {"login": "mallory"}}])
+    assert S["called"] and st == ["success"] and len(rv) == 1, (st, rv)
+    # 6
+    sha, code, st, rv, cm, lb = case(DOC, FAST, base_ref="other")
+    assert code == 1 and st == ["failure"] and not rv, (code, st, rv)
+    # 7
+    sha, code, st, rv, cm, lb = case(DOC, FAST, head2="0" * 40)
+    assert code == 1 and not rv and st[-1] == "failure", (code, st, rv)
+    # 8
+    sha, code, st, rv, cm, lb = case(DOC, FAST, pr=PR_AUDIT)
+    assert code == 0 and not rv and lb == [{"labels": ["fast-track-audit"]}], (rv, lb)
+    assert len(cm) == 1 and "audit sample" in cm[0], cm
+api.shutdown()
+pf.unlink()
 print("ok")
