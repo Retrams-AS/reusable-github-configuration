@@ -1,0 +1,14 @@
+name: Fast-track
+
+# Dispatch on the PR branch: gh workflow run fast-track.yml --ref <branch>
+on: workflow_dispatch
+
+permissions: {}
+
+jobs:
+  fast-track:
+    permissions:
+      contents: read
+      id-token: write
+    # @main on purpose: the OpenBao role binds the workflow at main.
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/fast-track.yml@main

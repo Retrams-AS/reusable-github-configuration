@@ -466,6 +466,36 @@ jobs:
       app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 ```
 
+### Fast-track classifier (`fast-track.yml`)
+
+Classifies a PR's diff as `fast` or `critical`. A `fast` PR gets an approving review from a
+GitHub App and a `fast-track` success status; a `critical` one gets a failure status and a
+comment. Anything off the path map, or under `.github/`, is critical whatever the model says.
+
+Opt in:
+
+1. Install the classifier GitHub App on the repo.
+2. Copy `consumer-template/fast-track.yml` to `.github/workflows/`.
+3. Write `.github/risk-paths.yaml` and merge it before the first PR to classify. It is read from
+   the PR's base commit, which must be on the default branch:
+
+   ```yaml
+   fast:                  # globs a PR may touch and stay fast
+     - "src/components/**"
+   critical:              # optional; carves paths back out of `fast`
+     - "src/components/arm/**"
+   audit-rate: 5          # optional; 1 in N PRs is sampled, default 5
+   ```
+
+4. Apply the ruleset, from a clone of this repo:
+   `gh api repos/<owner>/<repo>/rulesets --input .github/consumer-template/fast-track-ruleset.json`
+
+Dispatch it on the PR branch, which needs exactly one open PR:
+`gh workflow run fast-track.yml --ref <branch>`.
+
+Unlike every other workflow here, callers use `@main`, not a sha. OpenBao binds the role to this
+file at `main`, and a sha would accept a commit on any unmerged branch.
+
 ### Zizmor (`zizmor.yml`)
 
 Statically analyses GitHub Actions workflows for security problems with Zizmor.
