@@ -3,6 +3,7 @@
 # dependencies = ["pyyaml==6.0.2", "tree-sitter-language-pack==1.22.1"]
 # ///
 """Fast-track classifier: decides whether a PR may be approved by the bot."""
+import fnmatch
 import hashlib
 import hmac
 import json
@@ -16,7 +17,7 @@ from pathlib import PurePosixPath
 
 import yaml
 
-from symbols import function_at
+from symbols import function_at, spans
 
 TRIGGERS = {"hardware", "data", "contract", "auth", "reviewer"}
 API = "https://api.anthropic.com"
@@ -39,9 +40,19 @@ def prompt_effort(text):
     return m[1]
 
 
+MAP_KEYS = {"fast", "critical", "critical-symbols", "audit-rate"}
+
+
 def check_map(m):
     if not isinstance(m, dict):
         raise ValueError("risk-paths.yaml is not a mapping")
+    # An unknown key would look like a rule while enforcing nothing.
+    unknown = set(m) - MAP_KEYS
+    if unknown:
+        raise ValueError(f"risk-paths.yaml: unknown keys {sorted(unknown)}")
+    cs = m.get("critical-symbols", [])
+    if not isinstance(cs, list) or not all(isinstance(g, str) and "::" in g for g in cs):
+        raise ValueError("risk-paths.yaml: critical-symbols must be a list of '<path glob>::<name glob>'")
     for k in ("fast", "critical"):
         v = m.get(k, [])
         if not isinstance(v, list) or not all(isinstance(g, str) for g in v):
@@ -61,8 +72,51 @@ def on_fast_lane(path, risk_map):
             and not any(p.full_match(g) for g in risk_map.get("critical", [])))
 
 
-def floor(paths, risk_map):
-    return [p for p in paths if not on_fast_lane(p, risk_map)]
+def changed_lines(base, head, path):
+    """(old lines, new lines) a zero-context diff changes in path; a pure insertion also marks the
+    old line it lands after, so code inserted into a function counts for that function."""
+    old, new = set(), set()
+    out = sh("git", "diff", "-U0", "--no-ext-diff", "--no-textconv", "--no-renames", base, head, "--", path)
+    for m in re.finditer(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", out, re.M):
+        a, b, c, d = int(m[1]), int(m[2] or 1), int(m[3]), int(m[4] or 1)
+        old |= set(range(a, a + b)) | ({a} if b == 0 else set())
+        new |= set(range(c, c + d))
+    return old, new
+
+
+def held(path, risk_map, base=None, landed=None):
+    """Why the floor holds this changed path, or None when it is on the fast lane.
+
+    A path named by `critical-symbols` is held only where a changed line sits inside a named
+    function, on either side of the change. A file the parser cannot read is held whole.
+    """
+    if not on_fast_lane(path, risk_map):
+        return "off the fast lane"
+    names = [pat.partition("::")[2] for pat in risk_map.get("critical-symbols", [])
+             if PurePosixPath(path).full_match(pat.partition("::")[0])]
+    if not names or base is None:
+        return None
+    for rev, lines in zip((base, landed), changed_lines(base, landed, path)):
+        if not lines:
+            continue
+        try:
+            source = sh("git", "show", f"{rev}:{path}")
+        except subprocess.CalledProcessError:
+            continue  # added or deleted: the other side has it
+        try:
+            found = spans(path, source)
+        except ValueError as e:
+            return f"named functions, but {e}"
+        for line in sorted(lines):
+            for first, last, name in found:
+                if first <= line <= last and any(fnmatch.fnmatchcase(name, n) for n in names):
+                    return f"critical function `{name}`"
+    return None
+
+
+def floor(paths, risk_map, base=None, landed=None):
+    """{path: reason} for every changed path the floor holds."""
+    return {p: why for p in paths if (why := held(p, risk_map, base, landed))}
 
 
 def parse_verdict(text):
@@ -233,7 +287,7 @@ def run():
         except subprocess.CalledProcessError:
             risk_map = {}  # absent at base: every path is critical
         check_map(risk_map)
-        off = floor(paths, risk_map)
+        off = floor(paths, risk_map, base, landed)
         diff = build_diff(base, landed)
 
         if sticky:
@@ -273,7 +327,8 @@ def run():
             flagged = {f["file"] for f in model["flags"]}
             quiet = [p for p in off if p not in flagged]
             if quiet:
-                lines += ["", "Off the fast lane, nothing flagged by the model:"] + [f"- `{p}`" for p in quiet]
+                lines += ["", "Held by the path map, nothing flagged by the model:"] + [
+                    f"- `{p}`: {off[p]}" for p in quiet]
             gh("POST", f"/repos/{repo}/issues/{pr}/comments", {"body": "\n".join(lines)[:MAX_COMMENT]})
         if audit:
             gh("POST", f"/repos/{repo}/issues/{pr}/labels", {"labels": ["fast-track-audit"]})

@@ -502,7 +502,16 @@ fast:                  # globs a PR may touch and stay fast
 critical:              # optional; carves paths back out of `fast`
   - "src/components/arm/**"
 audit-rate: 5          # optional; 1 in N PRs is sampled, default 5
+critical-symbols:      # optional; inside a fast file, only these functions are held
+  - "src/views/ScanView.vue::onSubmit"
+  - "src/stores/**::save*"
 ```
+
+`critical-symbols` entries are `<path glob>::<function name glob>`, the name as the tree-sitter
+AST gives it (`Class.method`, a callback by the variable it is assigned to, a test by its title).
+A change inside a named function, before or after the change, holds the PR; the rest of the file
+stays on the fast lane. A file the parser can't read is held whole. Any other top-level key is an
+error, so a map can't name a rule CI does not enforce.
 
 The `fast-track-audit` label is created the first time a PR is sampled.
 
