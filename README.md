@@ -509,8 +509,9 @@ critical-symbols:      # optional; inside a fast file, only these functions are 
 
 `critical-symbols` entries are `<path glob>::<function name glob>`, the name as the tree-sitter
 AST gives it (`Class.method`, a callback by the variable it is assigned to, a test by its title).
-A change inside a named function, before or after the change, holds the PR; the rest of the file
-stays on the fast lane. A file the parser can't read is held whole. Any other top-level key is an
+A change whose innermost enclosing function is named, before or after the change, holds the PR;
+the rest of the file stays on the fast lane. An outer function is named for its own code, so a
+fast helper nested in it is not held. A file the parser can't read is held whole. Any other top-level key is an
 error, so a map can't name a rule CI does not enforce.
 
 The `fast-track-audit` label is created the first time a PR is sampled.
