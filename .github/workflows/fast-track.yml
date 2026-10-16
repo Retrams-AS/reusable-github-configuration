@@ -35,7 +35,7 @@ jobs:
     concurrency:
       group: fast-track-${{ inputs.repo }}-${{ inputs.pr }}
     env:
-      PROMPT_REF: d5e10ad469dda9c9de41ec512d1e42450702ce2f # agent-plugins
+      PROMPT_REF: b794f63f9e2177e15cac1cb196a410c48d638a8f # agent-plugins
     steps:
       # The inputs are untrusted. The repo name reaches the App token's scope and
       # a checkout, so refuse anything that is not a bare name before either.
