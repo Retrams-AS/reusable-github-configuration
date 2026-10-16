@@ -486,7 +486,8 @@ App's client ID and private key come from OpenBao. Both trust only this workflow
   `openbao-fast-track.md`).
 - The App installed on **All repositories**.
 - The `fast-track` org ruleset. The org's rulesets already require one approval; this one adds,
-  on every repo's default branch, that the approval must come after the last push:
+  on every repo's default branch, that the approval must come after the last push. Like the
+  org's `Main` ruleset it skips repos tagged `Content-Type=docs` and keeps `Main`'s bypass list:
   `gh api orgs/<owner>/rulesets --input .github/consumer-template/fast-track-ruleset.json`
 
 A repo with no `.github/risk-paths.yaml` is all critical, so nothing is fast until it has one. To
