@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.13"
-# dependencies = ["pyyaml==6.0.2"]
+# dependencies = ["pyyaml==6.0.2", "tree-sitter-language-pack==1.22.1"]
 # ///
 """Fast-track classifier: decides whether a PR may be approved by the bot."""
 import hashlib
@@ -16,12 +16,11 @@ from pathlib import PurePosixPath
 
 import yaml
 
+from symbols import function_at
+
 TRIGGERS = {"hardware", "data", "contract", "auth", "reviewer"}
 API = "https://api.anthropic.com"
 MODEL = "claude-haiku-5-5"
-# Haiku 5.5's price doubles above 100K input tokens, and a human should read a change that size.
-MAX_TOKENS_IN = 100_000
-MAX_DIFF = 1_000_000  # characters; far past MAX_TOKENS_IN, so not worth a count call
 EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 MAX_COMMENT = 60_000
 MARKER = "<!-- fast-track -->"
@@ -143,12 +142,6 @@ def anthropic(path, body, token, api=API, timeout=90):
         return json.load(r)
 
 
-def count_tokens(diff, system, token, api=API):
-    return anthropic("/v1/messages/count_tokens", {
-        "model": MODEL, "system": system,
-        "messages": [{"role": "user", "content": diff}]}, token, api)["input_tokens"]
-
-
 def call_haiku(diff, system, effort, token, api=API):
     # No temperature: Haiku 5.5 rejects non-default sampling. It thinks by default, so the answer
     # is the first text block, not content[0]; a refusal has none and raises.
@@ -169,15 +162,18 @@ def critical_input(why):
 def classify(diff, system, effort, token, api=API):
     if not diff.strip():
         return {"verdict": "fast", "flags": []}
-    if len(diff) > MAX_DIFF:
-        return critical_input(f"diff is {len(diff)} characters, over the {MAX_DIFF} limit")
+    # No size cap: a diff too big for the model fails the call, and a failure is critical.
     try:
-        n = count_tokens(diff, system, token, api)
-        if n > MAX_TOKENS_IN:
-            return critical_input(f"diff is {n} input tokens, over the {MAX_TOKENS_IN} limit")
         return parse_verdict(call_haiku(diff, system, effort, token, api))
     except Exception as e:
         return critical_input(f"classifier error: {type(e).__name__}: {e}")
+
+
+def landed_text(landed, path):
+    try:
+        return sh("git", "show", f"{landed}:{path}")
+    except subprocess.CalledProcessError:
+        return ""  # deleted in the PR
 
 
 def sh(*args, cwd=None):
@@ -251,10 +247,8 @@ def run():
 
         if sticky:
             model = critical_input("an earlier run already judged this sha critical; push a new commit")
-        elif off:
-            # The model can only escalate, so asking it would change nothing.
-            model = {"verdict": "not asked", "flags": []}
         else:
+            # Asked even when the floor is critical: its flags tell the reviewer where to look.
             with open(e["PROMPT_FILE"]) as f:
                 agent = f.read()
             model = classify(diff, strip_frontmatter(agent), prompt_effort(agent), e["ANTHROPIC_ACCESS_TOKEN"])
@@ -272,13 +266,21 @@ def run():
             lines = [MARKER, f"fast-track verdict: **{verdict}** (model said `{model['verdict']}`)."]
             if audit:
                 lines.append("This PR is in the audit sample and is never auto-approved. Please review it in full.")
-            if off:
-                lines += ["", "Paths off the fast lane:"] + [f"- `{p}`" for p in off]
+            if model["flags"]:
+                lines += ["", "**Read these first.** The model judged the rest of the diff fast."]
             for f in model["flags"]:
-                lines += ["", f"`{f['file']}:{f['line']}` ({f['trigger']}): {f['why']}"]
+                where = f"`{f['file']}:{f['line']}`"
+                fn = function_at(f["file"], landed_text(landed, f["file"]), f["line"])
+                if fn:
+                    where = f"`{f['file']}` › `{fn}` (line {f['line']})"
+                lines += ["", f"{where} ({f['trigger']}): {f['why']}"]
                 h = hunk_at(diff, f["file"], f["line"])
                 if h:
                     lines.append(fence(h))
+            flagged = {f["file"] for f in model["flags"]}
+            quiet = [p for p in off if p not in flagged]
+            if quiet:
+                lines += ["", "Off the fast lane, nothing flagged by the model:"] + [f"- `{p}`" for p in quiet]
             gh("POST", f"/repos/{repo}/issues/{pr}/comments", {"body": "\n".join(lines)[:MAX_COMMENT]})
         if audit:
             gh("POST", f"/repos/{repo}/issues/{pr}/labels", {"labels": ["fast-track-audit"]})

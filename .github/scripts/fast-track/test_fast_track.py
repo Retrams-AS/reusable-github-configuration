@@ -127,9 +127,8 @@ r = ft.classify("diff --git a b\n+x\n", "sys", "high", "k", f"http://127.0.0.1:{
 assert r["verdict"] == "critical" and r["flags"][0]["file"] == "(input)", r
 srv.shutdown()
 assert ft.classify("", "s", "high", "k") == {"verdict": "fast", "flags": []}
-assert ft.classify("x" * 1_000_001, "s", "high", "k")["verdict"] == "critical"
 
-# A well-behaved fake API: counts tokens, answers with a thinking block before the text.
+# A well-behaved fake API: answers with a thinking block before the text.
 A = {}
 
 
@@ -138,8 +137,7 @@ class Claude(http.server.BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         A.setdefault("calls", []).append((self.path, body))
         A["auth"] = (self.headers.get("authorization"), self.headers.get("x-api-key"))
-        out = ({"input_tokens": A["tokens"]} if self.path.endswith("/count_tokens") else
-               {"content": [{"type": "thinking", "thinking": ""}], "stop_reason": "refusal"} if A.get("refuse") else
+        out = ({"content": [{"type": "thinking", "thinking": ""}], "stop_reason": "refusal"} if A.get("refuse") else
                {"content": [{"type": "thinking", "thinking": ""},
                             {"type": "text", "text": '{"verdict": "fast", "flags": []}'}]})
         b = json.dumps(out).encode()
@@ -153,16 +151,13 @@ class Claude(http.server.BaseHTTPRequestHandler):
 srv = http.server.HTTPServer(("127.0.0.1", 0), Claude)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 api_url = f"http://127.0.0.1:{srv.server_port}"
-A.update(tokens=100_000, calls=[])
+A.update(calls=[])
 assert ft.classify("+x\n", "sys", "high", "k", api_url) == {"verdict": "fast", "flags": []}
-(p1, b1), (p2, b2) = A["calls"]
-assert p1 == "/v1/messages/count_tokens" and p2 == "/v1/messages", A["calls"]
+((p2, b2),) = A["calls"]
+assert p2 == "/v1/messages", A["calls"]
 assert A["auth"] == ("Bearer k", None), A["auth"]
 assert b2["output_config"] == {"effort": "high"} and "temperature" not in b2 and b2["model"] == ft.MODEL, b2
-A.update(tokens=100_001, calls=[])
-r = ft.classify("+x\n", "sys", "high", "k", api_url)
-assert r["verdict"] == "critical" and "100001" in r["flags"][0]["why"] and len(A["calls"]) == 1, (r, A)
-A.update(tokens=10, calls=[], refuse=True)
+A.update(calls=[], refuse=True)
 r = ft.classify("+x\n", "sys", "high", "k", api_url)
 assert r["verdict"] == "critical" and "refusal" in r["flags"][0]["why"], r
 srv.shutdown()
@@ -181,6 +176,15 @@ with tempfile.TemporaryDirectory() as d:
     g("add", "."); g("commit", "-qm", "head")
     out = ft.build_diff(base, "HEAD", cwd=d)
     assert "+os.system(evil)" in out, out
+
+# function_at names the innermost function, a callback by its variable, a test by its title.
+from symbols import function_at
+assert function_at("a.py", "x = 1\n\ndef save(db):\n    return db\n", 4) == "save"
+assert function_at("a.py", "x = 1\n", 1) is None
+assert function_at("a.md", "# hi\n", 1) is None
+vue = "<template><b/></template>\n<script setup>\nconst total = computed(() => {\n  return 1\n})\n</script>\n"
+assert function_at("V.vue", vue, 4) == "total", function_at("V.vue", vue, 4)
+assert function_at("t.js", "it('saves the scan', () => {\n  go()\n})\n", 2) == "it: saves the scan"
 
 # --- run() end to end: real git, fake GitHub API, canned model ---
 import os
@@ -247,7 +251,6 @@ with tempfile.TemporaryDirectory() as d:
             S["called"] = True
             return json.dumps(model)
         ft.call_haiku = haiku
-        ft.count_tokens = lambda *a: 10
         os.environ.update(FT_REPO="o/r", FT_PR=str(pr), GITHUB_REPOSITORY_OWNER="o",
                           GITHUB_API_URL=f"http://127.0.0.1:{api.server_port}", GH_TOKEN="t",
                           APP_SLUG="app", ANTHROPIC_ACCESS_TOKEN="a", AUDIT_KEY=KEY,
@@ -278,7 +281,8 @@ with tempfile.TemporaryDirectory() as d:
     # 2
     sha, code, st, rv, cm, lb = case({**DOC, "src/y.py": "x\n"}, FAST)
     assert code == 0 and st == ["neutral"] and not rv and len(cm) == 1 and "src/y.py" in cm[0], (st, cm)
-    assert not S["called"], "the floor is already critical; the model must not be asked"
+    assert S["called"], "the model is asked even when the floor is critical"
+    assert "nothing flagged by the model" in cm[0], cm
     # 3
     sha, code, st, rv, cm, lb = case({".github/risk-paths.yaml": 'fast: ["**"]\n', "src/y.py": "x\n"}, FAST)
     assert st == ["neutral"] and not rv and "src/y.py" in cm[0] and ".github/risk-paths.yaml" in cm[0], (st, cm)
@@ -287,6 +291,11 @@ with tempfile.TemporaryDirectory() as d:
     sha, code, st, rv, cm, lb = case(DOC, crit)
     assert st == ["neutral"] and not rv and len(cm) == 1, (st, cm)
     assert "docs/x.md:1" in cm[0] and "because" in cm[0] and "+TWO" in cm[0] and "@@" in cm[0], cm
+    # 4b: a flag inside a function names the function
+    crit_fn = {"verdict": "critical", "flags": [{"file": "src/a.py", "line": 3, "trigger": "data", "why": "writes"}]}
+    sha, code, st, rv, cm, lb = case({**DOC, "src/a.py": "import x\n\ndef save(db):\n    db.add(1)\n"}, crit_fn)
+    assert st == ["neutral"] and "`src/a.py` › `save`" in cm[0] and "Read these first" in cm[0], cm
+    assert "nothing flagged" not in cm[0], cm
     # 5
     for concl in ("neutral", "failure"):
         sticky = [{"name": "fast-track", "conclusion": concl, "app": {"slug": "app"}}]
