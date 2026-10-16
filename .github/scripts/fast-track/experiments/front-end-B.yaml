@@ -1,0 +1,15 @@
+# B: whole-file widening. src/** fast; sign-in, the HTTP client, routing, stores holding the token,
+# and payroll report code critical (the last as in front-end#84).
+fast: ["README.md", "docs/**", "public/favicon.ico", "public/img/icons/*.png", "src/**"]
+critical:
+  - "src/main.js"
+  - "src/api.js"
+  - "src/router.js"
+  - "src/store/authStore.js"
+  - "src/store/appStore.js"
+  - "src/views/LoginView.vue"
+  - "src/composables/useDateRange.js"
+  - "src/composables/useReportDownload.js"
+  - "src/components/**/*Report*"
+  - "src/components/**/*Report*/**"
+  - "src/components/**/MySignatures.vue"

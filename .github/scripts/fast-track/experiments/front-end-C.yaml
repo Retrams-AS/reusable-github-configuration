@@ -1,0 +1,19 @@
+# C: as B, but the HTTP client, routing and stores are judged per symbol: only the code that
+# touches the token, the 401 handler and the route guard is held.
+fast: ["README.md", "docs/**", "public/favicon.ico", "public/img/icons/*.png", "src/**"]
+critical:
+  - "src/main.js"
+  - "src/views/LoginView.vue"
+  - "src/composables/useDateRange.js"
+  - "src/composables/useReportDownload.js"
+  - "src/components/**/*Report*"
+  - "src/components/**/*Report*/**"
+  - "src/components/**/MySignatures.vue"
+critical-symbols:
+  - "src/api.js::authHeader"
+  - "src/api.js::use"            # the 401 response interceptor
+  - "src/router.js::beforeEach"
+  - "src/store/authStore.js::*login*"
+  - "src/store/authStore.js::logOut"
+  - "src/store/authStore.js::changePw"
+critical-calls: ["getItem", "setItem", "removeItem"]
