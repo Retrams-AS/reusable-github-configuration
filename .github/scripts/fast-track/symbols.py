@@ -41,11 +41,13 @@ def _name(node, src):
     return None
 
 
-def _symbols(source, lang, offset=0):
+def _symbols(source, lang, offset=0, check=False):
     from tree_sitter_language_pack import get_parser
 
     src = source.encode()
     tree = get_parser(lang).parse(src)
+    if check and tree.root_node.has_error:
+        raise ValueError("parse error")
     out = []
 
     def walk(node, prefix):
@@ -64,20 +66,33 @@ def _symbols(source, lang, offset=0):
     return out
 
 
-def function_at(path, source, line):
-    """The innermost named function or class around `line`, or None (module level, or no parser)."""
+def spans(path, source):
+    """Every named function and class as (first line, last line, qualified name), 1-based.
+
+    Raises ValueError for a file with no parser or one that does not parse: callers that decide
+    what is critical must treat that file as a whole.
+    """
     lang = LANG.get(PurePosixPath(path).suffix)
     if lang is None:
-        return None
+        raise ValueError("no parser for this file type")
     try:
-        if lang == "vue":
-            syms = []
-            for m in re.finditer(r"<script\b([^>]*)>(.*?)</script>", source, re.S):
-                sub = "typescript" if re.search(r'lang=["\']ts', m.group(1)) else "javascript"
-                syms += _symbols(m.group(2), sub, source.count("\n", 0, m.start(2)))
-        else:
-            syms = _symbols(source, lang)
-    except Exception:
+        if lang != "vue":
+            return _symbols(source, lang, check=True)
+        out = []
+        for m in re.finditer(r"<script\b([^>]*)>(.*?)</script>", source, re.S):
+            sub = "typescript" if re.search(r'lang=["\']ts', m.group(1)) else "javascript"
+            out += _symbols(m.group(2), sub, source.count("\n", 0, m.start(2)), check=True)
+        return out
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(f"parse failed: {type(e).__name__}") from e
+
+
+def function_at(path, source, line):
+    """The innermost named function or class around `line`, or None (module level, or no parser)."""
+    try:
+        inside = [s for s in spans(path, source) if s[0] <= line <= s[1]]
+    except ValueError:
         return None
-    inside = [s for s in syms if s[0] <= line <= s[1]]
     return max(inside, key=lambda s: s[0])[2] if inside else None
