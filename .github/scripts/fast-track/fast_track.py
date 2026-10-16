@@ -90,8 +90,8 @@ def changed_lines(base, head, path):
 def held(path, risk_map, base=None, landed=None):
     """Why the floor holds this changed path, or None when it is on the fast lane.
 
-    A path named by `critical-symbols` is held only where a changed line sits inside a named
-    function, on either side of the change. A file the parser cannot read is held whole.
+    A path named by `critical-symbols` is held only where the innermost function around a changed
+    line is named, on either side of the change. A file the parser cannot read is held whole.
     """
     if not on_fast_lane(path, risk_map):
         return "off the fast lane"
@@ -111,9 +111,14 @@ def held(path, risk_map, base=None, landed=None):
         except ValueError as e:
             return f"named functions, but {e}"
         for line in sorted(lines):
-            for first, last, name in found:
-                if first <= line <= last and any(fnmatch.fnmatchcase(name, n) for n in names):
-                    return f"critical function `{name}`"
+            # The innermost function decides: an outer wrapper is labelled by its own code, and
+            # each function nested in it has its own entry.
+            inside = [s for s in found if s[0] <= line <= s[1]]
+            if not inside:
+                continue
+            name = max(inside, key=lambda s: s[0])[2]
+            if any(fnmatch.fnmatchcase(name, n) for n in names):
+                return f"critical function `{name}`"
     return None
 
 

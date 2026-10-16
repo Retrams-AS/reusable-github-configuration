@@ -214,6 +214,16 @@ with tempfile.TemporaryDirectory() as d:
         assert ft.held("src/a.py", M, base, h) == "critical function `save`", "an insertion inside save"
         h = head(A0.replace("def save(db):\n    db.add(1)\n    return 1\n", ""))
         assert ft.held("src/a.py", M, base, h) == "critical function `save`", "deleting save is a change to it"
+        # Innermost decides: a fast helper nested in a named function is not held, and a named
+        # helper nested in an unnamed function is.
+        NEST = "def outer():\n    x = 1\n    def helper():\n        return 'a'\n    return helper\n"
+        Path(d, "src/n.py").write_text(NEST); g("add", "."); g("commit", "-qm", "nest")
+        nbase = ft.sh("git", "rev-parse", "HEAD", cwd=d).strip()
+        g("checkout", "-q", "-B", "n"); Path(d, "src/n.py").write_text(NEST.replace("'a'", "'b'")); g("commit", "-qam", "n")
+        nh = ft.sh("git", "rev-parse", "HEAD", cwd=d).strip()
+        assert ft.held("src/n.py", {"fast": ["src/**"], "critical-symbols": ["src/n.py::outer"]}, nbase, nh) is None
+        assert ft.held("src/n.py", {"fast": ["src/**"], "critical-symbols": ["src/n.py::outer.helper"]}, nbase, nh) \
+            == "critical function `outer.helper`"
         h = head("def broken(:\n    pass\n", "src/b.py")
         assert ft.held("src/b.py", M, base, h).startswith("named functions, but"), "unparseable is held whole"
         assert ft.held("src/a.py", {"fast": ["docs/**"]}, base, h) == "off the fast lane"
