@@ -470,7 +470,9 @@ jobs:
 
 Classifies a PR's diff as `fast` or `critical`. A `fast` PR gets an approving review from a
 GitHub App and a `fast-track` success status; a `critical` one gets a failure status and a
-comment. Anything off the path map, or under `.github/`, is critical whatever the model says.
+comment. Anything off the path map, or under `.github/`, is critical whatever the model says, but
+the model reads every PR: on a critical PR its flags, named by the function they sit in, are what
+the reviewer reads first, and the comment lists the critical paths it found nothing in.
 
 It reaches the Claude API through workload identity federation, so no API key is stored. The
 App's client ID and private key come from OpenBao. Both trust only this workflow at `main` (its
