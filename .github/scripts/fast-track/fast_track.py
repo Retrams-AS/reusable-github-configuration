@@ -25,6 +25,9 @@ MAX_DIFF = 1_000_000  # characters; far past MAX_TOKENS_IN, so not worth a count
 EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 MAX_COMMENT = 60_000
 MARKER = "<!-- fast-track -->"
+CHECK = "fast-track"
+# A critical PR is not broken, it needs a human, so it is neutral; failure is for a run that errored.
+CONCLUSION = {"fast": "success", "critical": "neutral"}
 
 
 def strip_frontmatter(text):
@@ -198,6 +201,11 @@ def gh(method, path, body=None):
         return json.load(r)
 
 
+def check_body(sha, conclusion, title):
+    return {"name": CHECK, "head_sha": sha, "status": "completed", "conclusion": conclusion,
+            "output": {"title": title[:139], "summary": title}}
+
+
 def run():
     e = os.environ
     repo = e["FT_REPO"]
@@ -218,15 +226,16 @@ def run():
             raise RuntimeError(f"PR base {b['ref']} is not the default branch")
         base = b["sha"]
 
-        statuses = []
+        runs = []
         for page in range(1, 11):
-            got = gh("GET", f"/repos/{repo}/commits/{sha}/statuses?per_page=100&page={page}")
-            statuses += got
+            got = gh("GET", f"/repos/{repo}/commits/{sha}/check-runs"
+                            f"?check_name={CHECK}&filter=all&per_page=100&page={page}")["check_runs"]
+            runs += got
             if len(got) < 100:
                 break
-        sticky = any(s["context"] == "fast-track" and s["state"] == "failure"
-                     and (s.get("creator") or {}).get("login") == f"{e['APP_SLUG']}[bot]"
-                     for s in statuses)
+        sticky = any(r["conclusion"] in ("neutral", "failure")
+                     and (r.get("app") or {}).get("slug") == e["APP_SLUG"]
+                     for r in runs)
 
         # Judge the tree that would land, not base...sha: with two merge bases git picks one, and
         # a revert of the other side's change vanishes from that diff. A conflict exits non-zero.
@@ -253,9 +262,7 @@ def run():
         audit = sampled(e["AUDIT_KEY"].encode(), repo, pr, risk_map.get("audit-rate", 5))
 
         desc = f"{verdict}: {len(off)} path(s) off the fast lane, model {model['verdict']}"
-        gh("POST", f"/repos/{repo}/statuses/{sha}",
-           {"state": "success" if verdict == "fast" else "failure",
-            "context": "fast-track", "description": desc[:139]})
+        gh("POST", f"/repos/{repo}/check-runs", check_body(sha, CONCLUSION[verdict], desc))
         if verdict == "fast" and not audit:
             if gh("GET", f"/repos/{repo}/pulls/{pr}")["head"]["sha"] != sha:
                 raise RuntimeError("PR head moved before approval")
@@ -278,8 +285,7 @@ def run():
     except Exception as ex:
         print(f"fast-track failed: {ex!r}", file=sys.stderr)
         for path, body in (
-            (st["sha"] and f"/repos/{repo}/statuses/{st['sha']}", {"state": "failure", "context": "fast-track",
-                                              "description": "classifier errored; critical"}),
+            (st["sha"] and f"/repos/{repo}/check-runs", check_body(st["sha"], "failure", "classifier errored; critical")),
             (st["pr"] and f"/repos/{repo}/issues/{st['pr']}/comments", {"body": f"{MARKER}\nThe fast-track classifier errored, so this PR is critical."}),
         ):
             try:

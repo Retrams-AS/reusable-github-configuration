@@ -469,8 +469,9 @@ jobs:
 ### Fast-track classifier (`fast-track.yml`)
 
 Classifies a PR's diff as `fast` or `critical`. A `fast` PR gets an approving review from a
-GitHub App and a `fast-track` success status; a `critical` one gets a failure status and a
-comment. Anything off the path map, or under `.github/`, is critical whatever the model says.
+GitHub App and a `fast-track` check run that succeeds; a `critical` one gets a neutral check run
+and a comment naming the hunks a human must read. A run that errors fails the check. Anything off
+the path map, or under `.github/`, is critical whatever the model says.
 
 It reaches the Claude API through workload identity federation, so no API key is stored. The
 App's client ID and private key come from OpenBao. Both trust only this workflow at `main` (its
@@ -484,7 +485,8 @@ App's client ID and private key come from OpenBao. Both trust only this workflow
   `FAST_TRACK_SERVICE_ACCOUNT_ID` and `FAST_TRACK_WORKSPACE_ID`.
 - OpenBao `ci/fast-track` with `client_id` and `app_private_key` (platform runbook
   `openbao-fast-track.md`).
-- The App installed on **All repositories**.
+- The App installed on **All repositories**, with write access to checks and pull requests and
+  read access to contents.
 - The `fast-track` org ruleset. The org's rulesets already require one approval; this one adds,
   on every repo's default branch, that the approval must come after the last push. Like the
   org's `Main` ruleset it skips repos tagged `Content-Type=docs` and keeps `Main`'s bypass list:
