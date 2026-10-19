@@ -250,7 +250,7 @@ def run():
         diff = build_diff(base, landed)
 
         if sticky:
-            model = critical_input("an earlier run already failed this sha; push a new commit")
+            model = critical_input("an earlier run already judged this sha critical; push a new commit")
         elif off:
             # The model can only escalate, so asking it would change nothing.
             model = {"verdict": "not asked", "flags": []}
