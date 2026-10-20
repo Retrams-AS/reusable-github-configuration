@@ -1,8 +1,9 @@
 # /// script
 # requires-python = ">=3.13"
-# dependencies = ["pyyaml==6.0.2"]
+# dependencies = ["pyyaml==6.0.2", "tree-sitter-language-pack==1.22.1"]
 # ///
 """Fast-track classifier: decides whether a PR may be approved by the bot."""
+import fnmatch
 import hashlib
 import hmac
 import json
@@ -16,12 +17,11 @@ from pathlib import PurePosixPath
 
 import yaml
 
+from symbols import function_at, spans
+
 TRIGGERS = {"hardware", "data", "contract", "auth", "reviewer"}
 API = "https://api.anthropic.com"
 MODEL = "claude-haiku-5-5"
-# Haiku 5.5's price doubles above 100K input tokens, and a human should read a change that size.
-MAX_TOKENS_IN = 100_000
-MAX_DIFF = 1_000_000  # characters; far past MAX_TOKENS_IN, so not worth a count call
 EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 MAX_COMMENT = 60_000
 MARKER = "<!-- fast-track -->"
@@ -43,9 +43,19 @@ def prompt_effort(text):
     return m[1]
 
 
+MAP_KEYS = {"fast", "critical", "critical-symbols", "audit-rate"}
+
+
 def check_map(m):
     if not isinstance(m, dict):
         raise ValueError("risk-paths.yaml is not a mapping")
+    # An unknown key would look like a rule while enforcing nothing.
+    unknown = set(m) - MAP_KEYS
+    if unknown:
+        raise ValueError(f"risk-paths.yaml: unknown keys {sorted(unknown)}")
+    cs = m.get("critical-symbols", [])
+    if not isinstance(cs, list) or not all(isinstance(g, str) and "::" in g for g in cs):
+        raise ValueError("risk-paths.yaml: critical-symbols must be a list of '<path glob>::<name glob>'")
     for k in ("fast", "critical"):
         v = m.get(k, [])
         if not isinstance(v, list) or not all(isinstance(g, str) for g in v):
@@ -65,8 +75,56 @@ def on_fast_lane(path, risk_map):
             and not any(p.full_match(g) for g in risk_map.get("critical", [])))
 
 
-def floor(paths, risk_map):
-    return [p for p in paths if not on_fast_lane(p, risk_map)]
+def changed_lines(base, head, path):
+    """(old lines, new lines) a zero-context diff changes in path; a pure insertion also marks the
+    old line it lands after, so code inserted into a function counts for that function."""
+    old, new = set(), set()
+    out = sh("git", "diff", "-U0", "--no-ext-diff", "--no-textconv", "--no-renames", base, head, "--", path)
+    for m in re.finditer(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", out, re.M):
+        a, b, c, d = int(m[1]), int(m[2] or 1), int(m[3]), int(m[4] or 1)
+        old |= set(range(a, a + b)) | ({a} if b == 0 else set())
+        new |= set(range(c, c + d))
+    return old, new
+
+
+def held(path, risk_map, base=None, landed=None):
+    """Why the floor holds this changed path, or None when it is on the fast lane.
+
+    A path named by `critical-symbols` is held only where the innermost function around a changed
+    line is named, on either side of the change. A file the parser cannot read is held whole.
+    """
+    if not on_fast_lane(path, risk_map):
+        return "off the fast lane"
+    names = [pat.partition("::")[2] for pat in risk_map.get("critical-symbols", [])
+             if PurePosixPath(path).full_match(pat.partition("::")[0])]
+    if not names or base is None:
+        return None
+    for rev, lines in zip((base, landed), changed_lines(base, landed, path)):
+        if not lines:
+            continue
+        try:
+            source = sh("git", "show", f"{rev}:{path}")
+        except subprocess.CalledProcessError:
+            continue  # added or deleted: the other side has it
+        try:
+            found = spans(path, source)
+        except ValueError as e:
+            return f"named functions, but {e}"
+        for line in sorted(lines):
+            # The innermost function decides: an outer wrapper is labelled by its own code, and
+            # each function nested in it has its own entry.
+            inside = [s for s in found if s[0] <= line <= s[1]]
+            if not inside:
+                continue
+            name = max(inside, key=lambda s: s[0])[2]
+            if any(fnmatch.fnmatchcase(name, n) for n in names):
+                return f"critical function `{name}`"
+    return None
+
+
+def floor(paths, risk_map, base=None, landed=None):
+    """{path: reason} for every changed path the floor holds."""
+    return {p: why for p in paths if (why := held(p, risk_map, base, landed))}
 
 
 def parse_verdict(text):
@@ -143,12 +201,6 @@ def anthropic(path, body, token, api=API, timeout=90):
         return json.load(r)
 
 
-def count_tokens(diff, system, token, api=API):
-    return anthropic("/v1/messages/count_tokens", {
-        "model": MODEL, "system": system,
-        "messages": [{"role": "user", "content": diff}]}, token, api)["input_tokens"]
-
-
 def call_haiku(diff, system, effort, token, api=API):
     # No temperature: Haiku 5.5 rejects non-default sampling. It thinks by default, so the answer
     # is the first text block, not content[0]; a refusal has none and raises.
@@ -169,15 +221,18 @@ def critical_input(why):
 def classify(diff, system, effort, token, api=API):
     if not diff.strip():
         return {"verdict": "fast", "flags": []}
-    if len(diff) > MAX_DIFF:
-        return critical_input(f"diff is {len(diff)} characters, over the {MAX_DIFF} limit")
+    # No size cap: a diff too big for the model fails the call, and a failure is critical.
     try:
-        n = count_tokens(diff, system, token, api)
-        if n > MAX_TOKENS_IN:
-            return critical_input(f"diff is {n} input tokens, over the {MAX_TOKENS_IN} limit")
         return parse_verdict(call_haiku(diff, system, effort, token, api))
     except Exception as e:
         return critical_input(f"classifier error: {type(e).__name__}: {e}")
+
+
+def landed_text(landed, path):
+    try:
+        return sh("git", "show", f"{landed}:{path}")
+    except subprocess.CalledProcessError:
+        return ""  # deleted in the PR
 
 
 def sh(*args, cwd=None):
@@ -246,15 +301,13 @@ def run():
         except subprocess.CalledProcessError:
             risk_map = {}  # absent at base: every path is critical
         check_map(risk_map)
-        off = floor(paths, risk_map)
+        off = floor(paths, risk_map, base, landed)
         diff = build_diff(base, landed)
 
         if sticky:
             model = critical_input("an earlier run already judged this sha critical; push a new commit")
-        elif off:
-            # The model can only escalate, so asking it would change nothing.
-            model = {"verdict": "not asked", "flags": []}
         else:
+            # Asked even when the floor is critical: its flags tell the reviewer where to look.
             with open(e["PROMPT_FILE"]) as f:
                 agent = f.read()
             model = classify(diff, strip_frontmatter(agent), prompt_effort(agent), e["ANTHROPIC_ACCESS_TOKEN"])
@@ -272,13 +325,22 @@ def run():
             lines = [MARKER, f"fast-track verdict: **{verdict}** (model said `{model['verdict']}`)."]
             if audit:
                 lines.append("This PR is in the audit sample and is never auto-approved. Please review it in full.")
-            if off:
-                lines += ["", "Paths off the fast lane:"] + [f"- `{p}`" for p in off]
+            if model["flags"]:
+                lines += ["", "**Read these first.** The model judged the rest of the diff fast."]
             for f in model["flags"]:
-                lines += ["", f"`{f['file']}:{f['line']}` ({f['trigger']}): {f['why']}"]
+                where = f"`{f['file']}:{f['line']}`"
+                fn = function_at(f["file"], landed_text(landed, f["file"]), f["line"])
+                if fn:
+                    where = f"`{f['file']}` › `{fn}` (line {f['line']})"
+                lines += ["", f"{where} ({f['trigger']}): {f['why']}"]
                 h = hunk_at(diff, f["file"], f["line"])
                 if h:
                     lines.append(fence(h))
+            flagged = {f["file"] for f in model["flags"]}
+            quiet = [p for p in off if p not in flagged]
+            if quiet:
+                lines += ["", "Held by the path map, nothing flagged by the model:"] + [
+                    f"- `{p}`: {off[p]}" for p in quiet]
             gh("POST", f"/repos/{repo}/issues/{pr}/comments", {"body": "\n".join(lines)[:MAX_COMMENT]})
         if audit:
             gh("POST", f"/repos/{repo}/issues/{pr}/labels", {"labels": ["fast-track-audit"]})

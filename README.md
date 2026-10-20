@@ -471,7 +471,9 @@ jobs:
 Classifies a PR's diff as `fast` or `critical`. A `fast` PR gets an approving review from a
 GitHub App and a `fast-track` check run that succeeds; a `critical` one gets a neutral check run
 and a comment naming the hunks a human must read. A run that errors fails the check. Anything off
-the path map, or under `.github/`, is critical whatever the model says.
+the path map, or under `.github/`, is critical whatever the model says, but the model reads every
+PR: on a critical PR its flags, named by the function they sit in, are what the reviewer reads
+first, and the comment lists the critical paths it found nothing in.
 
 It reaches the Claude API through workload identity federation, so no API key is stored. The
 App's client ID and private key come from OpenBao. Both trust only this workflow at `main` (its
@@ -502,7 +504,17 @@ fast:                  # globs a PR may touch and stay fast
 critical:              # optional; carves paths back out of `fast`
   - "src/components/arm/**"
 audit-rate: 5          # optional; 1 in N PRs is sampled, default 5
+critical-symbols:      # optional; inside a fast file, only these functions are held
+  - "src/views/ScanView.vue::onSubmit"
+  - "src/stores/**::save*"
 ```
+
+`critical-symbols` entries are `<path glob>::<function name glob>`, the name as the tree-sitter
+AST gives it (`Class.method`, a callback by the variable it is assigned to, a test by its title).
+A change whose innermost enclosing function is named, before or after the change, holds the PR;
+the rest of the file stays on the fast lane. An outer function is named for its own code, so a
+fast helper nested in it is not held. A file the parser can't read is held whole. Any other top-level key is an
+error, so a map can't name a rule CI does not enforce.
 
 The `fast-track-audit` label is created the first time a PR is sampled.
 

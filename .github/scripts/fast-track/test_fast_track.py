@@ -31,7 +31,7 @@ assert not ft.on_fast_lane("src/arm/x.py", m)
 assert ft.on_fast_lane("docs/a.md", m) and not ft.on_fast_lane("docs/a/b.md", m)
 assert not ft.on_fast_lane(".github/x", {"fast": ["**"]})
 assert not ft.on_fast_lane("src/a", {})
-assert ft.floor(["src/a", "x", "src/arm/y"], m) == ["x", "src/arm/y"]
+assert list(ft.floor(["src/a", "x", "src/arm/y"], m)) == ["x", "src/arm/y"]
 for bad in ([], {"fast": "x"}, {"critical": [1]}, {"audit-rate": 0}, {"audit-rate": "5"}):
     assert raises(ft.on_fast_lane, "a", bad), bad
 
@@ -127,9 +127,8 @@ r = ft.classify("diff --git a b\n+x\n", "sys", "high", "k", f"http://127.0.0.1:{
 assert r["verdict"] == "critical" and r["flags"][0]["file"] == "(input)", r
 srv.shutdown()
 assert ft.classify("", "s", "high", "k") == {"verdict": "fast", "flags": []}
-assert ft.classify("x" * 1_000_001, "s", "high", "k")["verdict"] == "critical"
 
-# A well-behaved fake API: counts tokens, answers with a thinking block before the text.
+# A well-behaved fake API: answers with a thinking block before the text.
 A = {}
 
 
@@ -138,8 +137,7 @@ class Claude(http.server.BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         A.setdefault("calls", []).append((self.path, body))
         A["auth"] = (self.headers.get("authorization"), self.headers.get("x-api-key"))
-        out = ({"input_tokens": A["tokens"]} if self.path.endswith("/count_tokens") else
-               {"content": [{"type": "thinking", "thinking": ""}], "stop_reason": "refusal"} if A.get("refuse") else
+        out = ({"content": [{"type": "thinking", "thinking": ""}], "stop_reason": "refusal"} if A.get("refuse") else
                {"content": [{"type": "thinking", "thinking": ""},
                             {"type": "text", "text": '{"verdict": "fast", "flags": []}'}]})
         b = json.dumps(out).encode()
@@ -153,16 +151,13 @@ class Claude(http.server.BaseHTTPRequestHandler):
 srv = http.server.HTTPServer(("127.0.0.1", 0), Claude)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 api_url = f"http://127.0.0.1:{srv.server_port}"
-A.update(tokens=100_000, calls=[])
+A.update(calls=[])
 assert ft.classify("+x\n", "sys", "high", "k", api_url) == {"verdict": "fast", "flags": []}
-(p1, b1), (p2, b2) = A["calls"]
-assert p1 == "/v1/messages/count_tokens" and p2 == "/v1/messages", A["calls"]
+((p2, b2),) = A["calls"]
+assert p2 == "/v1/messages", A["calls"]
 assert A["auth"] == ("Bearer k", None), A["auth"]
 assert b2["output_config"] == {"effort": "high"} and "temperature" not in b2 and b2["model"] == ft.MODEL, b2
-A.update(tokens=100_001, calls=[])
-r = ft.classify("+x\n", "sys", "high", "k", api_url)
-assert r["verdict"] == "critical" and "100001" in r["flags"][0]["why"] and len(A["calls"]) == 1, (r, A)
-A.update(tokens=10, calls=[], refuse=True)
+A.update(calls=[], refuse=True)
 r = ft.classify("+x\n", "sys", "high", "k", api_url)
 assert r["verdict"] == "critical" and "refusal" in r["flags"][0]["why"], r
 srv.shutdown()
@@ -181,6 +176,62 @@ with tempfile.TemporaryDirectory() as d:
     g("add", "."); g("commit", "-qm", "head")
     out = ft.build_diff(base, "HEAD", cwd=d)
     assert "+os.system(evil)" in out, out
+
+# function_at names the innermost function, a callback by its variable, a test by its title.
+from symbols import function_at
+assert function_at("a.py", "x = 1\n\ndef save(db):\n    return db\n", 4) == "save"
+assert function_at("a.py", "x = 1\n", 1) is None
+assert function_at("a.md", "# hi\n", 1) is None
+vue = "<template><b/></template>\n<script setup>\nconst total = computed(() => {\n  return 1\n})\n</script>\n"
+assert function_at("V.vue", vue, 4) == "total", function_at("V.vue", vue, 4)
+assert function_at("t.js", "it('saves the scan', () => {\n  go()\n})\n", 2) == "it: saves the scan"
+
+
+# held(): critical-symbols holds only changes inside a named function, on either side.
+import os
+with tempfile.TemporaryDirectory() as d:
+    def g(*a):
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=d, check=True, capture_output=True)
+    Path(d, "src").mkdir()
+    A0 = "import x\n\ndef save(db):\n    db.add(1)\n    return 1\n\ndef label():\n    return 'Save'\n"
+    Path(d, "src/a.py").write_text(A0); Path(d, "src/b.py").write_text("def broken(:\n")
+    g("init", "-q", "-b", "main"); g("add", "."); g("commit", "-qm", "base")
+    base = ft.sh("git", "rev-parse", "HEAD", cwd=d).strip()
+    M = {"fast": ["src/**"], "critical-symbols": ["src/a.py::save", "src/b.py::*"]}
+
+    def head(text, name="src/a.py"):
+        g("checkout", "-q", base); g("checkout", "-q", "-B", "h")
+        Path(d, name).write_text(text); g("commit", "-qam", "h")
+        return ft.sh("git", "rev-parse", "HEAD", cwd=d).strip()
+
+    cwd = os.getcwd(); os.chdir(d)
+    try:
+        h = head(A0.replace("return 'Save'", "return 'Lagre'"))
+        assert ft.held("src/a.py", M, base, h) is None, "a change outside save is fast-eligible"
+        h = head(A0.replace("db.add(1)", "db.add(2)"))
+        assert ft.held("src/a.py", M, base, h) == "critical function `save`"
+        h = head(A0.replace("    db.add(1)\n", "    db.add(1)\n    db.flush()\n"))
+        assert ft.held("src/a.py", M, base, h) == "critical function `save`", "an insertion inside save"
+        h = head(A0.replace("def save(db):\n    db.add(1)\n    return 1\n", ""))
+        assert ft.held("src/a.py", M, base, h) == "critical function `save`", "deleting save is a change to it"
+        # Innermost decides: a fast helper nested in a named function is not held, and a named
+        # helper nested in an unnamed function is.
+        NEST = "def outer():\n    x = 1\n    def helper():\n        return 'a'\n    return helper\n"
+        Path(d, "src/n.py").write_text(NEST); g("add", "."); g("commit", "-qm", "nest")
+        nbase = ft.sh("git", "rev-parse", "HEAD", cwd=d).strip()
+        g("checkout", "-q", "-B", "n"); Path(d, "src/n.py").write_text(NEST.replace("'a'", "'b'")); g("commit", "-qam", "n")
+        nh = ft.sh("git", "rev-parse", "HEAD", cwd=d).strip()
+        assert ft.held("src/n.py", {"fast": ["src/**"], "critical-symbols": ["src/n.py::outer"]}, nbase, nh) is None
+        assert ft.held("src/n.py", {"fast": ["src/**"], "critical-symbols": ["src/n.py::outer.helper"]}, nbase, nh) \
+            == "critical function `outer.helper`"
+        h = head("def broken(:\n    pass\n", "src/b.py")
+        assert ft.held("src/b.py", M, base, h).startswith("named functions, but"), "unparseable is held whole"
+        assert ft.held("src/a.py", {"fast": ["docs/**"]}, base, h) == "off the fast lane"
+    finally:
+        os.chdir(cwd)
+assert raises(ft.check_map, {"fast": [], "critical-symbol": ["x::y"]})
+assert raises(ft.check_map, {"critical-symbols": ["no-separator"]})
+ft.check_map({"fast": ["a"], "critical": ["b"], "critical-symbols": ["a::f"], "audit-rate": 3})
 
 # --- run() end to end: real git, fake GitHub API, canned model ---
 import os
@@ -247,7 +298,6 @@ with tempfile.TemporaryDirectory() as d:
             S["called"] = True
             return json.dumps(model)
         ft.call_haiku = haiku
-        ft.count_tokens = lambda *a: 10
         os.environ.update(FT_REPO="o/r", FT_PR=str(pr), GITHUB_REPOSITORY_OWNER="o",
                           GITHUB_API_URL=f"http://127.0.0.1:{api.server_port}", GH_TOKEN="t",
                           APP_SLUG="app", ANTHROPIC_ACCESS_TOKEN="a", AUDIT_KEY=KEY,
@@ -278,7 +328,8 @@ with tempfile.TemporaryDirectory() as d:
     # 2
     sha, code, st, rv, cm, lb = case({**DOC, "src/y.py": "x\n"}, FAST)
     assert code == 0 and st == ["neutral"] and not rv and len(cm) == 1 and "src/y.py" in cm[0], (st, cm)
-    assert not S["called"], "the floor is already critical; the model must not be asked"
+    assert S["called"], "the model is asked even when the floor is critical"
+    assert "nothing flagged by the model" in cm[0], cm
     # 3
     sha, code, st, rv, cm, lb = case({".github/risk-paths.yaml": 'fast: ["**"]\n', "src/y.py": "x\n"}, FAST)
     assert st == ["neutral"] and not rv and "src/y.py" in cm[0] and ".github/risk-paths.yaml" in cm[0], (st, cm)
@@ -287,6 +338,11 @@ with tempfile.TemporaryDirectory() as d:
     sha, code, st, rv, cm, lb = case(DOC, crit)
     assert st == ["neutral"] and not rv and len(cm) == 1, (st, cm)
     assert "docs/x.md:1" in cm[0] and "because" in cm[0] and "+TWO" in cm[0] and "@@" in cm[0], cm
+    # 4b: a flag inside a function names the function
+    crit_fn = {"verdict": "critical", "flags": [{"file": "src/a.py", "line": 3, "trigger": "data", "why": "writes"}]}
+    sha, code, st, rv, cm, lb = case({**DOC, "src/a.py": "import x\n\ndef save(db):\n    db.add(1)\n"}, crit_fn)
+    assert st == ["neutral"] and "`src/a.py` › `save`" in cm[0] and "Read these first" in cm[0], cm
+    assert "nothing flagged" not in cm[0], cm
     # 5
     for concl in ("neutral", "failure"):
         sticky = [{"name": "fast-track", "conclusion": concl, "app": {"slug": "app"}}]
