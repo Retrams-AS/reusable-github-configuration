@@ -202,8 +202,9 @@ class Fake(http.server.BaseHTTPRequestHandler):
             # First read finds the PR; the read just before approving sees head2.
             first = not S.get("seen"); S["seen"] = True
             self.reply(S["pr"] if first else {**S["pr"], "head": {"sha": S["head2"]}})
-        elif "/statuses" in self.path:
-            self.reply(S["statuses"])
+        elif "/check-runs" in self.path:
+            S["runs_query"] = self.path
+            self.reply({"check_runs": S["runs"]})
         else:
             self.send_error(404)
 
@@ -232,13 +233,13 @@ with tempfile.TemporaryDirectory() as d:
     base = ft.sh("git", "rev-parse", "HEAD", cwd=d).strip()
     pf = Path(d + ".prompt.md"); pf.write_text("---\nname: x\neffort: high\n---\nsystem\n")
 
-    def case(files, model, statuses=(), pr=PR_OK, base_ref="main", head2=None, start=None):
+    def case(files, model, runs=(), pr=PR_OK, base_ref="main", head2=None, start=None):
         g("checkout", "-q", "-B", "feat", start or base)
         for k, v in files.items():
             put(k, v)
         g("add", "."); g("commit", "-qm", "head")
         sha = ft.sh("git", "rev-parse", "HEAD", cwd=d).strip()
-        S.update(posts=[], head2=head2 or sha, statuses=list(statuses), called=False, seen=False, pr={
+        S.update(posts=[], head2=head2 or sha, runs=list(runs), called=False, seen=False, pr={
             "number": pr, "state": "open", "head": {"sha": sha},
             "base": {"ref": base_ref, "sha": base, "repo": {"default_branch": "main"}}})
 
@@ -259,8 +260,9 @@ with tempfile.TemporaryDirectory() as d:
         finally:
             os.chdir(cwd)
         P = S["posts"]
-        status = [b["state"] for p, b in P if "/statuses/" in p]
-        assert all(p.endswith(f"/statuses/{sha}") for p, b in P if "/statuses/" in p)
+        checks = [b for p, b in P if p.endswith("/check-runs")]
+        assert all(b["name"] == "fast-track" and b["head_sha"] == sha and b["status"] == "completed" for b in checks), checks
+        status = [b["conclusion"] for b in checks]
         reviews = [b for p, b in P if p.endswith("/reviews")]
         comments = [b["body"] for p, b in P if p.endswith("/comments")]
         labels = [b for p, b in P if p.endswith("/labels")]
@@ -275,23 +277,26 @@ with tempfile.TemporaryDirectory() as d:
     assert len(rv) == 1 and rv[0]["event"] == "APPROVE" and rv[0]["commit_id"] == sha, rv
     # 2
     sha, code, st, rv, cm, lb = case({**DOC, "src/y.py": "x\n"}, FAST)
-    assert code == 0 and st == ["failure"] and not rv and len(cm) == 1 and "src/y.py" in cm[0], (st, cm)
+    assert code == 0 and st == ["neutral"] and not rv and len(cm) == 1 and "src/y.py" in cm[0], (st, cm)
     assert not S["called"], "the floor is already critical; the model must not be asked"
     # 3
     sha, code, st, rv, cm, lb = case({".github/risk-paths.yaml": 'fast: ["**"]\n', "src/y.py": "x\n"}, FAST)
-    assert st == ["failure"] and not rv and "src/y.py" in cm[0] and ".github/risk-paths.yaml" in cm[0], (st, cm)
+    assert st == ["neutral"] and not rv and "src/y.py" in cm[0] and ".github/risk-paths.yaml" in cm[0], (st, cm)
     # 4
     crit = {"verdict": "critical", "flags": [{"file": "docs/x.md", "line": 1, "trigger": "auth", "why": "because"}]}
     sha, code, st, rv, cm, lb = case(DOC, crit)
-    assert st == ["failure"] and not rv and len(cm) == 1, (st, cm)
+    assert st == ["neutral"] and not rv and len(cm) == 1, (st, cm)
     assert "docs/x.md:1" in cm[0] and "because" in cm[0] and "+TWO" in cm[0] and "@@" in cm[0], cm
     # 5
-    sticky = [{"context": "fast-track", "state": "failure", "creator": {"login": "app[bot]"}}]
-    sha, code, st, rv, cm, lb = case(DOC, FAST, statuses=sticky)
-    assert not S["called"] and st == ["failure"] and not rv and len(cm) == 1, (S["called"], st, cm)
-    # 5b: same status by someone else is not sticky
-    sha, code, st, rv, cm, lb = case(DOC, FAST, statuses=[{**sticky[0], "creator": {"login": "mallory"}}])
-    assert S["called"] and st == ["success"] and len(rv) == 1, (st, rv)
+    for concl in ("neutral", "failure"):
+        sticky = [{"name": "fast-track", "conclusion": concl, "app": {"slug": "app"}}]
+        sha, code, st, rv, cm, lb = case(DOC, FAST, runs=sticky)
+        assert not S["called"] and st == ["neutral"] and not rv and len(cm) == 1, (concl, S["called"], st, cm)
+        assert "check_name=fast-track" in S["runs_query"] and "filter=all" in S["runs_query"], S["runs_query"]
+    # 5b: the same check run from another App is not sticky, nor is our own success
+    for run in ({**sticky[0], "app": {"slug": "mallory"}}, {**sticky[0], "conclusion": "success"}):
+        sha, code, st, rv, cm, lb = case(DOC, FAST, runs=[run])
+        assert S["called"] and st == ["success"] and len(rv) == 1, (run, st, rv)
     # 6
     sha, code, st, rv, cm, lb = case(DOC, FAST, base_ref="other")
     assert code == 1 and st == ["failure"] and not rv, (code, st, rv)
@@ -314,7 +319,7 @@ with tempfile.TemporaryDirectory() as d:
     base = ft.sh("git", "rev-parse", "main", cwd=d).strip()
     assert len(ft.sh("git", "merge-base", "--all", base, "atk", cwd=d).split()) == 2
     sha, code, st, rv, cm, lb = case({"src/arm/y.py": "unsafe\n"}, FAST, start="atk")
-    assert st == ["failure"] and not rv and "src/arm/y.py" in cm[0] and "x.py" not in cm[0], (st, rv, cm)
+    assert st == ["neutral"] and not rv and "src/arm/y.py" in cm[0] and "x.py" not in cm[0], (st, rv, cm)
 
 # Untrusted inputs: a repo outside the org, or a path in the name, is refused before any API call.
 for bad in ("evil/r", "o/r/../x", "o/", "o/r?x=1"):
@@ -325,14 +330,14 @@ for bad in ("evil/r", "o/r/../x", "o/", "o/r?x=1"):
     except SystemExit as ex:
         code = ex.code
     assert code == 1 and S["posts"] == [], (bad, code, S["posts"])
-# A closed PR is not judged: no status, only the error comment.
+# A closed PR is not judged: no check run, only the error comment.
 S.update(posts=[], seen=False, pr={**S["pr"], "state": "closed"})
 os.environ.update(FT_REPO="o/r", FT_PR=str(S["pr"]["number"]))
 try:
     ft.run(); code = 0
 except SystemExit as ex:
     code = ex.code
-assert code == 1 and not [p for p, b in S["posts"] if "/statuses/" in p], S["posts"]
+assert code == 1 and not [p for p, b in S["posts"] if p.endswith("/check-runs")], S["posts"]
 api.shutdown()
 pf.unlink()
 print("ok")

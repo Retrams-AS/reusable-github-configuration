@@ -155,7 +155,7 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ inputs.repo }},agent-plugins
           permission-pull-requests: write
-          permission-statuses: write
+          permission-checks: write
           permission-contents: read
 
       # Into pr/, never the workspace root: uv searches the working directory and
