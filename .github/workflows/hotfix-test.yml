@@ -1,0 +1,27 @@
+name: Hotfix script tests
+
+on:
+  pull_request:
+    paths:
+      - ".github/scripts/hotfix/**"
+      - ".github/workflows/hotfix-test.yml"
+  push:
+    branches: [main]
+    paths:
+      - ".github/scripts/hotfix/**"
+      - ".github/workflows/hotfix-test.yml"
+
+permissions: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run check.sh fixtures
+        run: bash .github/scripts/hotfix/test_check.sh

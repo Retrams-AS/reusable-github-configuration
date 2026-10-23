@@ -1,0 +1,27 @@
+name: Hotfix
+
+# Dispatch this on a hotfix/<base> branch (e.g. hotfix/2026-09.1), cut from the
+# <base> release tag. The reusable workflow refuses any other ref.
+on:
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: Space-separated overlay paths to pin, e.g. k8s/overlays/prod
+        required: true
+        type: string
+
+jobs:
+  hotfix:
+    permissions:
+      contents: read
+      id-token: write
+    uses: Retrams-AS/reusable-github-configuration/.github/workflows/hotfix-release.yml@0000000000000000000000000000000000000000 # v5.2.0 — replace with the tagged sha
+    with:
+      image: registry.digitalocean.com/the-retrams-registry/CHANGEME # EDIT: this service's image ref
+      targets: ${{ inputs.targets }}
+      channel: prod # EDIT: channel key, or "" if no channels file
+      forbidden-paths: "alembic/versions/**" # EDIT: paths a hotfix must not touch
+    secrets:
+      DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
+      app-id: ${{ secrets.RELEASE_APP_ID }}
+      app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}

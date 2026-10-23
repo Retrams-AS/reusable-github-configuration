@@ -271,6 +271,38 @@ See [`.github/consumer-template/`](.github/consumer-template/) for a caller,
 and "Manifests and image from one revision" below for when to reach for
 `channel`.
 
+### Hotfix release (`hotfix-release.yml`)
+
+Ships a fix from a `hotfix/<base>` branch (`<base>` is an existing CalVer
+tag, e.g. `hotfix/2026-09.1`), dispatched on that branch. Five steps:
+
+1. **check** refuses unless each target (and the channel key, when set) pins
+   `<base>` or `<base>.<m>` on the default branch, every commit in
+   `<base>..HEAD` is patch-identical to a default-branch commit or carries a
+   `git cherry-pick -x` trailer naming one, and no commit touches
+   `forbidden-paths`. The trailer is trusted; the PR into `hotfix/**` is the
+   review that guards it. It then works out the hotfix version.
+2. **build** builds the sha artifact (`build-and-push-docr.yml`).
+3. **retag** gives it the hotfix version, never rebuilding.
+4. **write**, with a `channel`, commits each target overlay's `newTag` to the
+   hotfix branch and tags that commit; without one it tags the built commit.
+   Either way it cuts the Release.
+5. **write** then moves the default branch: the channel key with a `channel`,
+   each target's `newTag` without. That write is the deploy.
+
+After a partial failure, dispatch the workflow again on the hotfix branch (not
+GitHub's Re-run, which keeps the original sha). If HEAD already carries the
+hotfix tag, build and retag are skipped; otherwise they run again. The tag,
+Release and default-branch write are idempotent.
+
+Inputs: `image` and `targets` (space-separated overlay paths) are required.
+`channel` (default empty) and `channel-file` (default `k8s/channels.yaml`)
+name a channels-file key to pin. `forbidden-paths` lists paths a hotfix must
+not touch. `image-irrelevant-paths` and `registry_login` pass through to
+build. Secrets: `DO_ACCESS_KEY`, plus `app-id` and `app-private-key` of the
+Release App, as for `promote`. The caller grants `contents: read` and
+`id-token: write`. See [`.github/consumer-template/hotfix.yml`](.github/consumer-template/hotfix.yml).
+
 ### Manifests and image from one revision
 
 An Argo Application that reads manifests from a branch and its image from a
