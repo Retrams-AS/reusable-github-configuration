@@ -1,0 +1,28 @@
+name: Dependency review
+
+# Fails a PR that adds or changes a dependency with a high or critical advisory.
+# Only the PR's own dependency changes are judged, so a repo with an old backlog
+# can still merge PRs that don't touch it. Like zizmor, maintain it here and
+# require it org-wide via a Ruleset (ADR 0017 in Retrams-AS/Documentation).
+
+on:
+  workflow_call:
+  pull_request:
+    branches: ["**"]
+
+permissions: {}
+
+jobs:
+  dependency-review:
+    name: Review dependency changes
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    permissions:
+      contents: read
+
+    steps:
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          license-check: false

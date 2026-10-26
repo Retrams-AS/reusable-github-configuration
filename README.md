@@ -21,6 +21,7 @@ See [Releasing](#releasing) for how to find a SHA.
 | `.github/workflows/zizmor.yml`                 | Reusable workflow — scans your Actions YAML for security issues with Zizmor |
 | `.github/workflows/actionlint.yml`             | Reusable workflow — lints Actions YAML for correctness (actionlint + shellcheck) |
 | `.github/workflows/pr-title-check.yml`         | Reusable workflow — checks each PR title is a valid Conventional Commit     |
+| `.github/workflows/dependency-review.yml`      | Reusable workflow — fails a PR that adds a dependency with a high or critical advisory |
 | `.github/workflows/commit-trailer-check.yml`   | Reusable workflow — checks AI co-author trailers are well formed                |
 | `.github/workflows/lint-and-format-node.yml`   | Reusable workflow — runs `yarn lint` and `yarn format` (ESLint + Prettier)  |
 | `.github/workflows/test-node.yml`              | Reusable workflow — runs `yarn test:unit` (Vitest)                          |
@@ -566,6 +567,15 @@ Statically analyses GitHub Actions workflows for security problems with Zizmor.
 Don't copy this workflow into every repo. It is enforced org-wide. One copy to maintain; Rulesets govern the rest.
 
 **If we upgrade to GitHub Advanced Security, we need to update and extend the workflow to upload results to security overview.**
+
+### Dependency review (`dependency-review.yml`)
+
+Fails a PR that adds or changes a dependency with a high or critical advisory, using
+`actions/dependency-review-action`. It only looks at the PR's own dependency changes, so a repo with
+open Dependabot alerts can still merge PRs that don't touch them. Licence checks are off.
+
+Like Zizmor, it's required org-wide through a Ruleset, so don't copy it into repos. The rules are in
+ADR 0017 in `Retrams-AS/Documentation`.
 
 ### actionlint (`actionlint.yml`)
 
