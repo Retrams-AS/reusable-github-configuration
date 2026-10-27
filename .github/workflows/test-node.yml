@@ -11,11 +11,17 @@ on:
         description: Run package install scripts (sets YARN_ENABLE_SCRIPTS)
         type: boolean
         default: false
+      runs-on:
+        description: >-
+          The job's runs-on, as JSON: a label string or an object, e.g.
+          '{"group":"Self-Hosted"}' for the org's self-hosted runners.
+        type: string
+        default: '"ubuntu-latest"'
 
 jobs:
   unit:
     name: Unit (Vitest)
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
     permissions:
       contents: read
     steps:

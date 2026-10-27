@@ -8,6 +8,13 @@ name: actionlint
 
 on:
   workflow_call:
+    inputs:
+      runs-on:
+        description: >-
+          The job's runs-on, as JSON: a label string or an object, e.g.
+          '{"group":"Self-Hosted"}' for the org's self-hosted runners.
+        type: string
+        default: '"ubuntu-latest"'
   workflow_dispatch:
   push:
     branches: ["main"]
@@ -19,7 +26,8 @@ permissions: {}
 jobs:
   actionlint:
     name: Run actionlint
-    runs-on: ubuntu-latest
+    # inputs is empty on this repo's own push and pull_request runs.
+    runs-on: ${{ fromJSON(inputs.runs-on || '"ubuntu-latest"') }}
     permissions:
       contents: read
     steps:

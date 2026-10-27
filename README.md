@@ -34,6 +34,13 @@ See [Releasing](#releasing) for how to find a SHA.
 
 ## Reusable workflows
 
+The PR checks below (both Python checks, both Node checks and actionlint) take
+an optional `runs-on` input, so a private repo can run them on the org's
+self-hosted runners rather than paying for hosted minutes. It is JSON, because
+the runners are addressed by runner group, an object a plain string input
+can't carry. The default, `'"ubuntu-latest"'`, keeps a caller where it was;
+`'{"group":"Self-Hosted"}'` moves it.
+
 ### Lint and format (`lint-and-format-python.yml`)
 
 Runs `ruff check` and `ruff format --check` using [uv](https://github.com/astral-sh/uv).
@@ -47,6 +54,7 @@ jobs:
       python-version: "3.12" # optional, defaults to "3.10"
       private-index: true    # optional, defaults to false — authenticate to pypi.retrams.no
       bao-ca: ${{ vars.BAO_SCANNER_CA }} # required when private-index is true
+      runs-on: '{"group":"Self-Hosted"}' # optional JSON, defaults to '"ubuntu-latest"'
     permissions:
       contents: read
       id-token: write
@@ -70,6 +78,7 @@ jobs:
       python-version: "3.12" # optional, defaults to "3.10"
       private-index: true    # optional, defaults to false — authenticate to pypi.retrams.no
       bao-ca: ${{ vars.BAO_SCANNER_CA }} # required when private-index is true
+      runs-on: '{"group":"Self-Hosted"}' # optional JSON, defaults to '"ubuntu-latest"'
     permissions:
       contents: read
       id-token: write
@@ -97,7 +106,11 @@ jobs:
     with:
       node-version: "20"      # optional, defaults to "20"
       enable-scripts: false   # optional, defaults to false (skips install build scripts)
+      runs-on: '{"group":"Self-Hosted"}' # optional JSON, defaults to '"ubuntu-latest"'
 ```
+
+On a self-hosted runner, Node must already be on the `PATH`: `corepack enable`
+runs before `setup-node`.
 
 ### Test — Node (`test-node.yml`)
 
@@ -113,7 +126,10 @@ jobs:
     with:
       node-version: "20"      # optional, defaults to "20"
       enable-scripts: false   # optional, defaults to false (skips install build scripts)
+      runs-on: '{"group":"Self-Hosted"}' # optional JSON, defaults to '"ubuntu-latest"'
 ```
+
+Node must be on a self-hosted runner's `PATH`, as for `lint-and-format-node.yml`.
 
 ### E2E — Cypress (`e2e-cypress.yml`)
 
@@ -582,7 +598,7 @@ ADR 0017 in `Retrams-AS/Documentation`.
 Correctness linting for Actions YAML — undefined contexts, malformed expressions,
 bad `needs:` references, and shellcheck findings inside `run:` blocks. The security
 counterpart is `zizmor.yml`. Runs on this repo's own pushes and PRs; callable from
-another repo with `uses:`.
+another repo with `uses:`, which can pass `runs-on`.
 
 Locally:
 

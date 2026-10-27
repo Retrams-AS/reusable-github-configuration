@@ -25,13 +25,19 @@ on:
         description: PEM of the CA that issued OpenBao's listener certificate
         type: string
         default: ""
+      runs-on:
+        description: >-
+          The job's runs-on, as JSON: a label string or an object, e.g.
+          '{"group":"Self-Hosted"}' for the org's self-hosted runners.
+        type: string
+        default: '"ubuntu-latest"'
 
 permissions: {}
 
 jobs:
   ruff:
     name: ruff
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
     permissions:
       # contents: read is not optional. This job had no permissions block, so it
       # inherited the default token; declaring one replaces that default outright
