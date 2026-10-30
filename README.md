@@ -205,6 +205,24 @@ basename:
 Locally, `aws s3 cp` the same object into the folder and build as usual. Reference
 implementation: `rmrs-compose`, `2D-camera/OMRON_SENTECH`.
 
+`SSH_PRIVATE_KEY` covers a private git dependency fetched over SSH. Store the private half of
+a read-only deploy key on the dependency repo as a secret and pass it through; the Dockerfile
+mounts it with `RUN --mount=type=ssh`. The key must be unencrypted. It is written to a 0600
+temp file, handed to BuildKit as `ssh: default=<file>`, and deleted after the build; it is
+never a build arg, so it lands in no layer, cache or log. Unset, the build has no SSH. The
+Dockerfile must pin GitHub's host keys itself (`known_hosts`) and may use a ref build-arg:
+
+```yaml
+    with:
+      build-args: RETRAMS_DETECTION_REF=v1.2.3
+    secrets:
+      DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
+      SSH_PRIVATE_KEY: ${{ secrets.RETRAMS_DETECTION_DEPLOY_KEY }}
+```
+
+Locally: `docker build --ssh default .` with your agent loaded. Reference implementation:
+`rmrs-controller` (`detection_interfaces` from `retrams-detection`).
+
 `build-args` lets one parameterised Dockerfile produce several images, the caller varying
 them per matrix entry:
 
