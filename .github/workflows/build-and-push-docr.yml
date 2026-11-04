@@ -110,6 +110,12 @@ on:
         description: 7-char commit sha the image is tagged with
         value: ${{ jobs.build.outputs.sha7 }}
     secrets:
+      SSH_PRIVATE_KEY:
+        description: >-
+          Private half of a read-only deploy key, for Dockerfiles that fetch a
+          private git dependency with `RUN --mount=type=ssh`. Unencrypted key
+          only. Unset = no SSH in the build.
+        required: false
       DO_ACCESS_KEY:
         description: DigitalOcean API token with registry scope (required when push or registry_login is true)
         required: false
@@ -258,6 +264,22 @@ jobs:
           bao-ca: ${{ inputs.bao-ca }}
           netrc-file: ${{ runner.temp }}/netrc
 
+      # A 0600 key file handed to BuildKit as `ssh: default=<file>`: the key
+      # is only ever mounted into the RUN that asks for it, never in a layer,
+      # build arg or cache. Env-passed so it cannot be template-injected, and
+      # never echoed. Host-key pinning is the Dockerfile's job (known_hosts).
+      - name: Write the SSH key
+        id: ssh
+        if: steps.retag.outcome != 'success'
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          KEY_FILE: ${{ runner.temp }}/ssh-key
+        run: |
+          set -euo pipefail
+          [ -n "$SSH_PRIVATE_KEY" ] || exit 0
+          (umask 077; printf '%s\n' "$SSH_PRIVATE_KEY" > "$KEY_FILE")
+          echo "key-file=$KEY_FILE" >> "$GITHUB_OUTPUT"
+
       - name: Build image
         if: steps.retag.outcome != 'success'
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
@@ -272,3 +294,10 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ steps.sha.outputs.scope }}
           # secret-files, not secrets: a three-line netrc breaks that input's parsing.
           secret-files: ${{ steps.index-token.outputs.netrc-file && format('netrc={0}', steps.index-token.outputs.netrc-file) || '' }}
+          ssh: ${{ steps.ssh.outputs.key-file && format('default={0}', steps.ssh.outputs.key-file) || '' }}
+
+      - name: Remove the SSH key
+        if: always() && steps.ssh.outputs.key-file != ''
+        env:
+          KEY_FILE: ${{ steps.ssh.outputs.key-file }}
+        run: rm -f "$KEY_FILE"

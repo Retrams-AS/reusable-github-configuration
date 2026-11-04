@@ -19,6 +19,7 @@ jobs:
       image-irrelevant-paths: "k8s/** docs/** README.md" # EDIT: paths that cannot change the image
     secrets:
       DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
+      # SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_KEY }} # optional: deploy key for `RUN --mount=type=ssh`
 
   pin-dev:
     needs: build
