@@ -306,6 +306,14 @@ See [`.github/consumer-template/`](.github/consumer-template/) for a caller,
 and "Manifests and image from one revision" below for when to reach for
 `channel`.
 
+When the default branch has moved since `$GITHUB_SHA`, `promote` rebuilds its
+commit on the new head and retries, up to five times, but only if every commit
+in between is another promote's pointer commit (Release App author, `release:
+… [skip ci]` message, overlay `kustomization.yaml` or channels-file changes
+only). So several promotes off one release, as a per-overlay matrix runs them,
+all land. Any other commit in between fails the run: the image was built from
+`$GITHUB_SHA`'s tree.
+
 ### Hotfix release (`hotfix-release.yml`)
 
 Ships a fix from a `hotfix/<base>` branch (`<base>` is an existing CalVer

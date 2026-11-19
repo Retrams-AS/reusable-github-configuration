@@ -116,6 +116,12 @@ jobs:
           REPO: ${{ github.repository }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           COMMIT: ${{ steps.write.outputs.commit }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          TARGET: ${{ inputs.target }}
+          CHANNEL_FILE: ${{ inputs.channel-file }}
+          CHANNEL: ${{ inputs.channel }}
+          VERSION: ${{ inputs.version }}
+          TAG: ${{ inputs.tag }}
         run: bash ._shared/.github/scripts/promote/fast-forward.sh
 
       - name: Tag the commit
@@ -124,6 +130,6 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag }}
-          TARGET_SHA: ${{ steps.write.outputs.commit || github.sha }}
+          TARGET_SHA: ${{ steps.land.outputs.commit || github.sha }}
           GITHUB_RELEASE: ${{ inputs.github-release }}
         run: bash ._shared/.github/scripts/promote/tag-and-release.sh
