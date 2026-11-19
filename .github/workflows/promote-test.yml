@@ -1,0 +1,29 @@
+name: Promote script tests
+
+on:
+  pull_request:
+    paths:
+      - ".github/scripts/promote/**"
+      - ".github/workflows/promote-test.yml"
+      - ".github/workflows/promote.yml"
+  push:
+    branches: [main]
+    paths:
+      - ".github/scripts/promote/**"
+      - ".github/workflows/promote-test.yml"
+      - ".github/workflows/promote.yml"
+
+permissions: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run promote fixtures
+        run: bash .github/scripts/promote/test_promote.sh

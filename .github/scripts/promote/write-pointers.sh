@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# BASE is the commit to build on: $GITHUB_SHA, or the newer head fast-forward.sh
+# rebuilds on after a race with another promote.
+BASE=${BASE:-$GITHUB_SHA}
+
 # One commit, both pointers. The Contents API writes one file per call, so
 # writing target and channel separately would produce two commits — exactly
 # the split-write skew a tagged release can't tolerate.
@@ -11,8 +15,8 @@ if [ -n "$TARGET" ]; then
   name=$(basename "$TARGET")
   file="${TARGET}/kustomization.yaml"
 
-  if ! resp=$(gh api "repos/${REPO}/contents/${file}?ref=${GITHUB_SHA}"); then
-    echo "::error::${file} not found at ${GITHUB_SHA:0:7} — is '${TARGET}' the right overlay path?"
+  if ! resp=$(gh api "repos/${REPO}/contents/${file}?ref=${BASE}"); then
+    echo "::error::${file} not found at ${BASE:0:7} — is '${TARGET}' the right overlay path?"
     exit 1
   fi
   jq -r .content <<< "$resp" | base64 -d > target-current.yaml
@@ -32,8 +36,8 @@ if [ -n "$TARGET" ]; then
 fi
 
 if [ -n "$CHANNEL" ]; then
-  if ! resp=$(gh api "repos/${REPO}/contents/${CHANNEL_FILE}?ref=${GITHUB_SHA}"); then
-    echo "::error::${CHANNEL_FILE} not found at ${GITHUB_SHA:0:7}."
+  if ! resp=$(gh api "repos/${REPO}/contents/${CHANNEL_FILE}?ref=${BASE}"); then
+    echo "::error::${CHANNEL_FILE} not found at ${BASE:0:7}."
     exit 1
   fi
   jq -r .content <<< "$resp" | base64 -d > channel-current.yaml
@@ -63,13 +67,13 @@ if [ -z "$message" ]; then
   exit 0
 fi
 
-base_tree=$(gh api "repos/${REPO}/commits/${GITHUB_SHA}" --jq .commit.tree.sha)
+base_tree=$(gh api "repos/${REPO}/commits/${BASE}" --jq .commit.tree.sha)
 tree=$(jq -n --arg b "$base_tree" --argjson t "$entries" '{base_tree: $b, tree: $t}' \
   | gh api --method POST "repos/${REPO}/git/trees" --input - --jq .sha)
 # [skip ci]: App-token commits, unlike GITHUB_TOKEN ones, do trigger
 # workflows, and a pointer write has nothing to build.
 commit=$(jq -n --arg m "release: ${message} [skip ci]" \
-               --arg t "$tree" --arg p "$GITHUB_SHA" \
+               --arg t "$tree" --arg p "$BASE" \
                '{message: $m, tree: $t, parents: [$p]}' \
   | gh api --method POST "repos/${REPO}/git/commits" --input - --jq .sha)
 echo "commit=${commit}" >> "$GITHUB_OUTPUT"
