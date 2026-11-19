@@ -21,8 +21,18 @@ if [ -n "$TARGET" ]; then
   fi
   jq -r .content <<< "$resp" | base64 -d > target-current.yaml
 
-  sed -E "s|(newTag: \")[^\"]*(\")|\1${VERSION}\2|" target-current.yaml > target-bumped.yaml
-  grep -q "newTag: \"${VERSION}\"" target-bumped.yaml \
+  # With IMAGE, only the entry whose `name` (not `newName`) is IMAGE moves; yq
+  # finds its line and sed edits that line alone, so formatting survives.
+  lines=""
+  if [ -n "${IMAGE:-}" ]; then
+    lines=$(IMAGE="$IMAGE" yq '.images[] | select(.name == strenv(IMAGE)) | .newTag | line' target-current.yaml)
+    if ! [[ "$lines" =~ ^[1-9][0-9]*$ ]]; then
+      echo "::error::${file} needs exactly one images[] entry named ${IMAGE} with a newTag; found line(s) '${lines//$'\n'/,}'."
+      exit 1
+    fi
+  fi
+  sed -E "${lines}s|(newTag: \")[^\"]*(\")|\1${VERSION}\2|" target-current.yaml > target-bumped.yaml
+  sed -n "${lines:-1,\$}p" target-bumped.yaml | grep -q "newTag: \"${VERSION}\"" \
     || { echo "::error::${file} has no quoted newTag line to bump."; exit 1; }
   if cmp -s target-current.yaml target-bumped.yaml; then
     echo "${TARGET} is already at ${VERSION}; nothing to promote there."

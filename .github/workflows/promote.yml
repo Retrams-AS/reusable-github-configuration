@@ -19,6 +19,14 @@ on:
         required: false
         type: string
         default: ""
+      image:
+        description: >-
+          Full image name, e.g. registry.digitalocean.com/the-retrams-registry/fot.
+          When set, only the target's images[] entry with that `name` moves;
+          unset bumps every newTag in the overlay.
+        required: false
+        type: string
+        default: ""
       version:
         description: >-
           The version to write. A CalVer for a release, or a 7-char sha when Build
@@ -102,6 +110,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
           TARGET: ${{ inputs.target }}
+          IMAGE: ${{ inputs.image }}
           CHANNEL_FILE: ${{ inputs.channel-file }}
           CHANNEL: ${{ inputs.channel }}
           VERSION: ${{ inputs.version }}
@@ -118,6 +127,7 @@ jobs:
           COMMIT: ${{ steps.write.outputs.commit }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           TARGET: ${{ inputs.target }}
+          IMAGE: ${{ inputs.image }}
           CHANNEL_FILE: ${{ inputs.channel-file }}
           CHANNEL: ${{ inputs.channel }}
           VERSION: ${{ inputs.version }}

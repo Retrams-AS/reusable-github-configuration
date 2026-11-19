@@ -293,7 +293,11 @@ build/test/lint don't run on it.
    per-repo): `RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY`.
 
 `target` bumps `images.newTag` in that overlay path, for an environment whose
-Application tracks the default branch. `channel` sets one key in a channels
+Application tracks the default branch. Set `image` to the full image name and
+only the `images[]` entry with that `name` moves; entries for other repos'
+images, and entries only renamed onto it with `newName`, keep their tags. A
+target without exactly one such entry fails the run. Without `image`, every
+`newTag` in the overlay moves. `channel` sets one key in a channels
 file (`channel-file`, default `k8s/channels.yaml`) instead, for an environment
 whose Application gets its revision from an ApplicationSet reading that file.
 The key must already exist — a typo is an error rather than a new key nobody
