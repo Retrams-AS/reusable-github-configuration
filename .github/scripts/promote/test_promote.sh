@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Runs write-pointers.sh + fast-forward.sh as promote.yml does, against a local
 # bare repo behind fake_gh.py. Each case promotes overlays from one GITHUB_SHA.
+# Checks are single-quoted strings run by eval, so shellcheck cannot see them
+# use rc, LANDED or the helpers.
+# shellcheck disable=SC2016,SC2034,SC2329
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 fails=0
@@ -38,7 +41,7 @@ promote() {
   : > "$W/out"
   ( cd "$W/run" && export PATH="$W/bin:$PATH" FAKE_REPO="$W/origin" FAKE_LOGIN="release-app[bot]" \
       APP_SLUG=release-app REPO=o/r IMAGE="${IMAGE-}" GITHUB_SHA=$SHA DEFAULT_BRANCH=main TARGET="k8s/overlays/$1" \
-      CHANNEL= CHANNEL_FILE=k8s/channels.yaml VERSION=2026-11.3 TAG= \
+      CHANNEL="" CHANNEL_FILE=k8s/channels.yaml VERSION=2026-11.3 TAG="" \
       GITHUB_OUTPUT="$W/out" GITHUB_STEP_SUMMARY=/dev/null
     bash "$here/write-pointers.sh" || exit 1
     COMMIT=$(sed -n 's/^commit=//p' "$W/out") bash "$here/fast-forward.sh" ) > "$W/log" 2>&1
