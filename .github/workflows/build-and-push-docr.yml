@@ -105,6 +105,14 @@ on:
           instead of rebuilt. Empty (default) always builds.
         type: string
         default: ""
+      cache-mode:
+        description: >-
+          What the build writes to the GitHub Actions cache: max (default) every
+          stage's layers, min only the final image's, off nothing (it still reads).
+          Uploading every stage, base images included, can take longer than the
+          stages take to build; a cheap multi-stage build is faster with min or off.
+        type: string
+        default: max
     outputs:
       sha7:
         description: 7-char commit sha the image is tagged with
@@ -252,6 +260,9 @@ jobs:
       - name: Set up Docker Buildx
         if: steps.retag.outcome != 'success'
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          # The runner is thrown away after the job; removing the builder only costs time.
+          cleanup: false
 
       # The token lives 15 minutes; docr-login and buildx setup above do real
       # work, so neither belongs inside that window. Mint it last, right
@@ -291,7 +302,7 @@ jobs:
           tags: ${{ inputs.image }}:${{ steps.sha.outputs.sha7 }}
           build-args: ${{ inputs.build-args }}
           cache-from: type=gha,scope=${{ steps.sha.outputs.scope }}
-          cache-to: type=gha,mode=max,scope=${{ steps.sha.outputs.scope }}
+          cache-to: ${{ inputs.cache-mode != 'off' && format('type=gha,mode={0},scope={1}', inputs.cache-mode, steps.sha.outputs.scope) || '' }}
           # secret-files, not secrets: a three-line netrc breaks that input's parsing.
           secret-files: ${{ steps.index-token.outputs.netrc-file && format('netrc={0}', steps.index-token.outputs.netrc-file) || '' }}
           ssh: ${{ steps.ssh.outputs.key-file && format('default={0}', steps.ssh.outputs.key-file) || '' }}
